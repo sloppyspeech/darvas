@@ -272,25 +272,38 @@ def generate_signals(df: pd.DataFrame, boxes: List[DarvasBox], symbol: str) -> D
     entry_price = latest_box.top * (1 + ENTRY_BUFFER)
     stop_loss = latest_box.bottom
     
-    # Risk and reward calculations
-    risk_amount = entry_price - stop_loss
+    # Risk and reward calculations from ENTRY price (standard Darvas calculation)
+    risk_amount = entry_price - stop_loss  # How much you risk from entry
     reward_amount = risk_amount * 2  # Standard 2R target
     target_price = entry_price + reward_amount
     
-    # Calculate actual risk:reward ratio based on current price vs target
-    if current_price and current_price > 0 and stop_loss > 0:
-        current_risk = current_price - stop_loss
-        current_reward = target_price - current_price
+    # Standard R:R from entry is always 1:2 by design
+    entry_risk_reward = "1:2"
+    
+    # Calculate current position R:R (if already holding or considering buying at current price)
+    if current_price and current_price > 0 and stop_loss > 0 and target_price > 0:
+        current_risk = current_price - stop_loss  # Risk from current price
+        current_reward = target_price - current_price  # Potential reward from current
         
         if current_risk > 0 and current_reward > 0:
             rr_ratio = current_reward / current_risk
-            risk_reward = f"1:{rr_ratio:.1f}"
+            current_risk_reward = f"1:{rr_ratio:.1f}"
         elif current_risk <= 0:
-            risk_reward = "Below SL"
+            current_risk_reward = "Below SL"
         else:
-            risk_reward = "N/A"
+            current_risk_reward = "At/Above Target"
     else:
-        risk_reward = "N/A"
+        current_risk_reward = "N/A"
+    
+    # Use the entry-based R:R as the main display (this is standard for Darvas setups)
+    # The format shows: "1:2 (entry)" or current position if price moved
+    if current_price and entry_price:
+        if abs(current_price - entry_price) / entry_price < 0.02:  # Within 2% of entry
+            risk_reward = entry_risk_reward  # Use standard 1:2
+        else:
+            risk_reward = current_risk_reward  # Use current position R:R
+    else:
+        risk_reward = entry_risk_reward
     
     risk_percent = (risk_amount / entry_price) * 100 if entry_price > 0 else 0
     
@@ -309,6 +322,8 @@ def generate_signals(df: pd.DataFrame, boxes: List[DarvasBox], symbol: str) -> D
         'reward_amount': round(reward_amount, 2),
         'risk_percent': round(risk_percent, 2),
         'risk_reward': risk_reward,
+        'entry_rr': entry_risk_reward,
+        'current_rr': current_risk_reward,
         'volume_confirmed': latest_box.breakout_volume_confirmed
     }
 

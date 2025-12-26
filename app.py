@@ -43,6 +43,18 @@ from screener import (
     VOLUME_SPIKE_THRESHOLD
 )
 from nifty500 import get_nse_symbols, get_nifty50_sample, get_symbol_count
+from stock_symbols import (
+    search_symbols, 
+    get_all_symbols, 
+    refresh_stock_symbols,
+    get_symbol_count as get_db_symbol_count,
+    parse_display_format
+)
+from ollama_integration import (
+    check_ollama_connection,
+    generate_darvas_summary,
+    OLLAMA_MODEL
+)
 
 
 # Page configuration
@@ -151,8 +163,8 @@ def main():
 
 
 def render_screener():
-    """Render the Nifty 500 screener page."""
-    st.header("🔎 Nifty 500 Darvas Candidate Screener")
+    """Render the stock screener page with universal exchange options."""
+    st.header("🔎 Darvas Candidate Screener")
     
     st.markdown("""
     **Multi-Gate Screening Funnel** to identify high-probability Darvas Box candidates:
@@ -167,35 +179,71 @@ def render_screener():
     
     st.markdown("---")
     
+    # Get database counts
+    db_counts = get_db_symbol_count()
+    nse_count = db_counts.get('NSE', 0)
+    bse_count = db_counts.get('BSE', 0)
+    total_count = nse_count + bse_count
+    
     # Screening options
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
     
     with col1:
-        scan_option = st.radio(
-            "Scan Universe",
-            ["Nifty 50 (Fast)", "Nifty 500 (Full)"],
-            help="Nifty 50 for quick test, Nifty 500 for complete scan"
+        exchange_option = st.selectbox(
+            "Exchange",
+            ["NSE", "BSE", "Both (NSE + BSE)"],
+            help=f"NSE: {nse_count} stocks | BSE: {bse_count} stocks"
         )
     
     with col2:
+        # Stock count options based on exchange
+        if exchange_option == "NSE":
+            scan_options = ["Top 50 (Fast)", "Top 200", "Top 500", f"All NSE ({nse_count})"]
+            default_counts = [50, 200, 500, nse_count]
+        elif exchange_option == "BSE":
+            scan_options = ["Top 50 (Fast)", "Top 200", "Top 500", f"All BSE ({bse_count})"]
+            default_counts = [50, 200, 500, bse_count]
+        else:
+            scan_options = ["Top 100 (Fast)", "Top 500", "Top 1000", f"All ({total_count})"]
+            default_counts = [100, 500, 1000, total_count]
+        
+        scan_option = st.selectbox(
+            "Scan Size",
+            scan_options,
+            help="Select number of stocks to screen"
+        )
+        
+        # Get selected count
+        selected_idx = scan_options.index(scan_option)
+        stock_limit = default_counts[selected_idx]
+    
+    with col3:
         priority_filter = st.selectbox(
             "Show Priority",
             ["All Candidates", "High Only", "Medium & Above"],
             help="Filter results by priority level"
         )
     
-    with col3:
+    with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        run_btn = st.button("🚀 Run Screener", type="primary", use_container_width=True)
+        run_btn = st.button("🚀 Run", type="primary", use_container_width=True)
+    
+    # Show database info
+    st.caption(f"📊 Database: {nse_count} NSE + {bse_count} BSE = {total_count} total stocks")
     
     if run_btn:
-        # Get symbols based on selection
-        if scan_option == "Nifty 50 (Fast)":
-            symbols = get_nifty50_sample()
+        # Get symbols based on exchange selection
+        if exchange_option == "NSE":
+            all_symbols = get_all_symbols("NSE")
+        elif exchange_option == "BSE":
+            all_symbols = get_all_symbols("BSE")
         else:
-            symbols = get_nse_symbols()
+            all_symbols = get_all_symbols()  # Both
         
-        st.info(f"Screening {len(symbols)} stocks... This may take a few minutes.")
+        # Limit to selected count
+        symbols_to_scan = [s['yf_symbol'] for s in all_symbols[:stock_limit]]
+        
+        st.info(f"Screening {len(symbols_to_scan)} {exchange_option} stocks... This may take a few minutes.")
         
         # Progress tracking
         progress_bar = st.progress(0)
@@ -208,7 +256,7 @@ def render_screener():
         start_time = time.time()
         
         # Run screener
-        results, stats = run_screener(symbols, progress_callback=update_progress)
+        results, stats = run_screener(symbols_to_scan, progress_callback=update_progress)
         
         elapsed_time = time.time() - start_time
         status_text.text(f"✅ Screening completed in {elapsed_time:.2f} seconds")
@@ -414,39 +462,91 @@ def render_new_analysis(confirmation_days: int, volume_multiplier: float):
     """Render the new analysis page."""
     st.header("🔍 New Batch Analysis")
     
-    # Stock input
+    # Stock search section
+    st.markdown("### 🔎 Search & Add Stocks")
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        search_query = st.text_input(
+            "Search by symbol or company name",
+            placeholder="e.g., RELIANCE or Tata",
+            key="stock_search"
+        )
+    
+    with col2:
+        exchange_filter = st.selectbox(
+            "Exchange",
+            ["All", "NSE", "BSE"],
+            key="exchange_filter"
+        )
+    
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh DB", help="Re-fetch stock list from NSE/BSE"):
+            with st.spinner("Fetching stocks..."):
+                nse, bse = refresh_stock_symbols()
+                st.success(f"Updated: {nse} NSE, {bse} BSE stocks")
+    
+    # Show search results
+    if search_query and len(search_query) >= 2:
+        results = search_symbols(search_query, limit=15)
+        
+        if results:
+            st.markdown("**Search Results** (click to add):")
+            
+            # Create columns for results
+            cols = st.columns(3)
+            for i, stock in enumerate(results):
+                col_idx = i % 3
+                with cols[col_idx]:
+                    display_text = f"{stock['symbol']} ({stock['exchange']})"
+                    if st.button(display_text, key=f"add_{stock['yf_symbol']}", use_container_width=True):
+                        # Add to text area
+                        current = st.session_state.get('selected_symbols', [])
+                        if stock['yf_symbol'] not in current:
+                            current.append(stock['yf_symbol'])
+                            st.session_state['selected_symbols'] = current
+                            st.rerun()
+            
+            st.caption(f"Showing top {len(results)} results for '{search_query}'")
+        else:
+            st.info(f"No stocks found matching '{search_query}'")
+    
+    st.markdown("---")
+    
+    # Stock input area
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # Check if we have screener symbols
-        default_value = "RELIANCE.NS\nTCS.NS\nHDFCBANK.NS\nINFY.NS\nICICIBANK.NS"
-        
-        if 'screener_candidates' in st.session_state:
+        # Build default value from session state or defaults
+        if 'selected_symbols' in st.session_state and st.session_state['selected_symbols']:
+            default_value = "\n".join(st.session_state['selected_symbols'])
+        elif 'screener_candidates' in st.session_state:
             high_symbols = [c.symbol for c in st.session_state['screener_candidates'] 
                            if c.priority == "High"][:10]
-            if high_symbols:
-                default_value = "\n".join(high_symbols)
+            default_value = "\n".join(high_symbols) if high_symbols else "RELIANCE.NS\nTCS.NS\nHDFCBANK.NS"
+        else:
+            default_value = "RELIANCE.NS\nTCS.NS\nHDFCBANK.NS\nINFY.NS\nICICIBANK.NS"
         
         stocks_input = st.text_area(
-            "Enter Stock Symbols (one per line)",
+            "Selected Stocks (one per line)",
             value=default_value,
             height=150,
-            help="Use .NS for NSE stocks, .BO for BSE stocks"
+            help="Use .NS for NSE stocks, .BO for BSE stocks. Search above to add more."
         )
     
     with col2:
         st.markdown("### Quick Add")
         if st.button("Nifty 50 Sample", use_container_width=True):
-            st.session_state['stocks'] = """RELIANCE.NS
-TCS.NS
-HDFCBANK.NS
-INFY.NS
-ICICIBANK.NS
-BHARTIARTL.NS
-SBIN.NS
-WIPRO.NS
-TATAMOTORS.NS
-AXISBANK.NS"""
+            st.session_state['selected_symbols'] = [
+                "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+                "BHARTIARTL.NS", "SBIN.NS", "WIPRO.NS", "TATAMOTORS.NS", "AXISBANK.NS"
+            ]
+            st.rerun()
+        
+        if st.button("Clear All", use_container_width=True):
+            st.session_state['selected_symbols'] = []
             st.rerun()
         
         if 'screener_candidates' in st.session_state:
@@ -454,8 +554,13 @@ AXISBANK.NS"""
                 high_symbols = [c.symbol for c in st.session_state['screener_candidates'] 
                                if c.priority in ["High", "Medium"]]
                 if high_symbols:
-                    st.session_state['analysis_symbols'] = "\n".join(high_symbols)
+                    st.session_state['selected_symbols'] = high_symbols
                     st.rerun()
+        
+        # Show symbol count from DB
+        db_counts = get_db_symbol_count()
+        total = sum(db_counts.values()) if db_counts else 0
+        st.caption(f"📊 {total} stocks in database")
     
     # Study description
     study_desc = st.text_input(
@@ -692,13 +797,15 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
         symbol = st.text_input(
             "Enter Stock Symbol",
             placeholder="e.g., RELIANCE.NS",
-            value="RELIANCE.NS"
+            value=st.session_state.get('quick_symbol', 'RELIANCE.NS'),
+            key="quick_symbol_input"
         )
     
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
         analyze_btn = st.button("🔍 Analyze", type="primary", use_container_width=True)
     
+    # Run analysis and store in session state
     if analyze_btn and symbol:
         with st.spinner(f"Analyzing {symbol}..."):
             result = analyze_stock(symbol.strip(), confirmation_days, volume_multiplier)
@@ -707,7 +814,16 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
             st.error(f"❌ {result.get('error', 'Failed to fetch data for')} {symbol}")
             return
         
+        # Store in session state for persistence
+        st.session_state['quick_result'] = result
+        st.session_state['quick_symbol'] = symbol.strip()
+        st.session_state['quick_ai_summary'] = None  # Reset AI summary
+    
+    # Display results from session state
+    if 'quick_result' in st.session_state and st.session_state['quick_result']:
+        result = st.session_state['quick_result']
         signal = result['signal']
+        current_symbol = st.session_state.get('quick_symbol', symbol)
         
         # Display signal summary
         st.markdown("### 📊 Signal Summary")
@@ -721,6 +837,10 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
         else:
             st.warning(f"⚪ **{status}**")
         
+        # Suggestion if available
+        if signal.get('suggestion'):
+            st.markdown(f"**Suggestion:** {signal.get('suggestion')} - {signal.get('suggestion_reason', '')}")
+        
         # Metrics
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Current Price", f"₹{signal['current_price']}")
@@ -730,18 +850,42 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
         
         if signal['entry_price']:
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Target (2R)", f"₹{signal['target_2r']}")
+            col1.metric("Target (2R)", f"₹{signal.get('target_price', signal.get('target_2r', 'N/A'))}")
             col2.metric("Risk", f"{signal['risk_percent']}%")
             col3.metric("Risk:Reward", signal['risk_reward'])
             col4.metric("Volume Confirmed", "✅ Yes" if signal['volume_confirmed'] else "❌ No")
         
         # Chart
         st.markdown("### 📈 Chart")
-        st.plotly_chart(result['chart'], use_container_width=True)
+        st.plotly_chart(result['chart'], use_container_width=True, key="quick_chart")
+        
+        # AI Summary Section
+        st.markdown("### 🤖 AI Analysis Summary")
+        
+        if check_ollama_connection():
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                generate_ai_btn = st.button("✨ Generate AI Summary", type="secondary", key="generate_ai_btn")
+            
+            if generate_ai_btn:
+                with st.spinner(f"Generating summary using {OLLAMA_MODEL}..."):
+                    ai_summary = generate_darvas_summary(signal, current_symbol)
+                st.session_state['quick_ai_summary'] = ai_summary
+            
+            # Display AI summary from session state
+            if st.session_state.get('quick_ai_summary'):
+                ai_summary = st.session_state['quick_ai_summary']
+                if not ai_summary.startswith("Error"):
+                    st.success("**AI Trading Insights:**")
+                    st.markdown(ai_summary)
+                else:
+                    st.warning(ai_summary)
+        else:
+            st.info("💡 AI Summary available when Ollama is running on port 11435. Start Ollama and refresh.")
         
         # Historical analysis
         st.markdown("### 📜 Historical Analysis")
-        history = get_symbol_history(symbol.strip())
+        history = get_symbol_history(current_symbol)
         
         if history:
             hist_df = pd.DataFrame(history)
