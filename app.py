@@ -1,7 +1,8 @@
 """
-Darvas Box Momentum Analyzer - Streamlit Web Application
-=========================================================
+Darvas Box Momentum Analyzer - Streamlit Web Application V2.0
+=============================================================
 Interactive web interface for Darvas Box analysis of NSE/BSE stocks.
+Includes Nifty 500 Screener for candidate identification.
 """
 
 import streamlit as st
@@ -25,13 +26,28 @@ from database import (
     get_study_results,
     get_study_details,
     delete_study,
-    get_symbol_history
+    get_symbol_history,
+    generate_screener_run_id,
+    save_screener_run,
+    get_all_screener_runs,
+    get_screener_results,
+    delete_screener_run
 )
+from screener import (
+    run_screener,
+    get_candidates_only,
+    results_to_dataframe,
+    get_symbols_for_analysis,
+    PROXIMITY_THRESHOLD,
+    STRENGTH_THRESHOLD,
+    VOLUME_SPIKE_THRESHOLD
+)
+from nifty500 import get_nse_symbols, get_nifty50_sample, get_symbol_count
 
 
 # Page configuration
 st.set_page_config(
-    page_title="Darvas Box Analyzer",
+    page_title="Darvas Box Analyzer V2",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -49,23 +65,32 @@ st.markdown("""
         padding: 15px;
         margin: 5px 0;
     }
-    .status-breakout {
+    .priority-high {
         background-color: #1b5e20;
         color: white;
-        padding: 5px 10px;
-        border-radius: 5px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: bold;
     }
-    .status-inside {
+    .priority-medium {
+        background-color: #f57c00;
+        color: white;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+    }
+    .priority-low {
         background-color: #0d47a1;
         color: white;
-        padding: 5px 10px;
-        border-radius: 5px;
+        padding: 3px 8px;
+        border-radius: 4px;
     }
-    .status-nosetup {
-        background-color: #424242;
-        color: white;
-        padding: 5px 10px;
-        border-radius: 5px;
+    .gate-pass {
+        color: #4caf50;
+        font-weight: bold;
+    }
+    .gate-fail {
+        color: #f44336;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -77,13 +102,13 @@ def main():
     # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/fluency/96/stock-market.png", width=80)
-        st.title("📊 Darvas Box Analyzer")
+        st.title("📊 Darvas Box V2")
         st.markdown("---")
         
         # Navigation
         page = st.radio(
             "Navigation",
-            ["🔍 New Analysis", "📚 Study History", "📈 Quick Analyze"],
+            ["🔎 Screener", "🔍 New Analysis", "📚 Study History", "📈 Quick Analyze", "📋 Screener History"],
             label_visibility="collapsed"
         )
         
@@ -110,14 +135,279 @@ def main():
         
         st.markdown("---")
         st.caption("Built for NSE/BSE Markets 🇮🇳")
+        st.caption(f"Nifty 500: {get_symbol_count()} stocks")
     
     # Main content based on navigation
-    if page == "🔍 New Analysis":
+    if page == "🔎 Screener":
+        render_screener()
+    elif page == "🔍 New Analysis":
         render_new_analysis(confirmation_days, volume_multiplier)
     elif page == "📚 Study History":
         render_study_history()
+    elif page == "📋 Screener History":
+        render_screener_history()
     else:
         render_quick_analyze(confirmation_days, volume_multiplier)
+
+
+def render_screener():
+    """Render the Nifty 500 screener page."""
+    st.header("🔎 Nifty 500 Darvas Candidate Screener")
+    
+    st.markdown("""
+    **Multi-Gate Screening Funnel** to identify high-probability Darvas Box candidates:
+    
+    | Gate | Criterion | Threshold |
+    |------|-----------|-----------|
+    | 1️⃣ | Proximity to 52W High | Within 10% |
+    | 2️⃣ | Strength (Price Momentum) | 2x from 52W Low |
+    | 3️⃣ | Trend (Above 200 SMA) | Price > SMA |
+    | 4️⃣ | Interest (Volume Spike) | 1.5x Avg Volume |
+    """)
+    
+    st.markdown("---")
+    
+    # Screening options
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        scan_option = st.radio(
+            "Scan Universe",
+            ["Nifty 50 (Fast)", "Nifty 500 (Full)"],
+            help="Nifty 50 for quick test, Nifty 500 for complete scan"
+        )
+    
+    with col2:
+        priority_filter = st.selectbox(
+            "Show Priority",
+            ["All Candidates", "High Only", "Medium & Above"],
+            help="Filter results by priority level"
+        )
+    
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        run_btn = st.button("🚀 Run Screener", type="primary", use_container_width=True)
+    
+    if run_btn:
+        # Get symbols based on selection
+        if scan_option == "Nifty 50 (Fast)":
+            symbols = get_nifty50_sample()
+        else:
+            symbols = get_nse_symbols()
+        
+        st.info(f"Screening {len(symbols)} stocks... This may take a few minutes.")
+        
+        # Progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        def update_progress(current, total, symbol):
+            progress_bar.progress(current / total)
+            status_text.text(f"Screening {symbol}... ({current}/{total})")
+        
+        start_time = time.time()
+        
+        # Run screener
+        results, stats = run_screener(symbols, progress_callback=update_progress)
+        
+        elapsed_time = time.time() - start_time
+        status_text.text(f"✅ Screening completed in {elapsed_time:.2f} seconds")
+        
+        # Get candidates only
+        candidates = get_candidates_only(results)
+        
+        # Save to database
+        run_id = generate_screener_run_id()
+        results_dicts = [r.to_dict() for r in results]
+        
+        if save_screener_run(run_id, results_dicts, stats):
+            st.success(f"📁 Screener run saved: **{run_id}**")
+        
+        # Store in session state
+        st.session_state['screener_results'] = results
+        st.session_state['screener_candidates'] = candidates
+        st.session_state['screener_stats'] = stats
+        st.session_state['screener_run_id'] = run_id
+    
+    # Display results if available
+    if 'screener_candidates' in st.session_state:
+        display_screener_results(
+            st.session_state['screener_candidates'],
+            st.session_state['screener_stats'],
+            priority_filter
+        )
+
+
+def display_screener_results(candidates, stats, priority_filter):
+    """Display screener results in heatmap format."""
+    st.markdown("---")
+    
+    # Summary metrics
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("Screened", stats['processed'])
+    with col2:
+        st.metric("Candidates", stats['candidates'])
+    with col3:
+        st.metric("🟢 High Priority", stats['high_priority'])
+    with col4:
+        st.metric("🟡 Medium Priority", stats['medium_priority'])
+    with col5:
+        st.metric("🔵 Low Priority", stats['low_priority'])
+    
+    if not candidates:
+        st.warning("No candidates found matching the screening criteria.")
+        return
+    
+    # Apply priority filter
+    filtered = candidates
+    if priority_filter == "High Only":
+        filtered = [c for c in candidates if c.priority == "High"]
+    elif priority_filter == "Medium & Above":
+        filtered = [c for c in candidates if c.priority in ["High", "Medium"]]
+    
+    if not filtered:
+        st.info(f"No candidates match the '{priority_filter}' filter.")
+        return
+    
+    st.markdown("### 🔥 Darvas Candidates Heatmap")
+    
+    # Create DataFrame for display
+    df = results_to_dataframe(filtered)
+    
+    # Reorder and rename columns for heatmap
+    display_cols = ['symbol', 'priority', 'proximity_pct', 'strength_ratio', 
+                    'above_sma', 'volume_spike', 'gates_passed', 
+                    'consolidation_range', 'days_in_consolidation', 'current_price']
+    
+    display_df = df[[c for c in display_cols if c in df.columns]].copy()
+    display_df.columns = ['Symbol', 'Priority', '% from 52W High', 'Strength (x)', 
+                          'Above SMA', 'Vol Spike', 'Gates', 
+                          'Consolidation %', 'Days Consol.', 'Price']
+    
+    # Style the dataframe
+    def style_priority(val):
+        if val == 'High':
+            return 'background-color: #1b5e20; color: white'
+        elif val == 'Medium':
+            return 'background-color: #f57c00; color: white'
+        elif val == 'Low':
+            return 'background-color: #0d47a1; color: white'
+        return ''
+    
+    def style_bool(val):
+        if val == True:
+            return 'color: #4caf50; font-weight: bold'
+        return 'color: #f44336'
+    
+    styled_df = display_df.style.applymap(style_priority, subset=['Priority'])
+    styled_df = styled_df.applymap(style_bool, subset=['Above SMA', 'Vol Spike'])
+    styled_df = styled_df.format({
+        '% from 52W High': '{:.1f}%',
+        'Strength (x)': '{:.2f}x',
+        'Consolidation %': '{:.1f}%',
+        'Price': '₹{:.2f}'
+    })
+    
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    
+    # Export options
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        csv = df.to_csv(index=False)
+        st.download_button(
+            "📥 Download Results (CSV)",
+            csv,
+            f"darvas_screener_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "text/csv"
+        )
+    
+    with col2:
+        # Get symbols for Darvas analysis
+        symbols_list = "\n".join([c.symbol for c in filtered])
+        st.download_button(
+            "📋 Export Symbols for Analysis",
+            symbols_list,
+            "screener_symbols.txt",
+            "text/plain"
+        )
+    
+    # High priority detail cards
+    high_priority = [c for c in filtered if c.priority == "High"]
+    if high_priority:
+        st.markdown("### 🎯 High Priority Candidates")
+        
+        for candidate in high_priority[:5]:  # Show top 5
+            with st.expander(f"🟢 {candidate.symbol} - {candidate.gates_passed}/4 Gates", expanded=False):
+                col1, col2, col3, col4 = st.columns(4)
+                
+                col1.metric("Current Price", f"₹{candidate.current_price:.2f}")
+                col2.metric("52W High", f"₹{candidate.high_52w:.2f}")
+                col3.metric("% from High", f"{candidate.proximity_pct:.1f}%")
+                col4.metric("Strength", f"{candidate.strength_ratio:.2f}x")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Above 200 SMA", "✅ Yes" if candidate.above_sma else "❌ No")
+                col2.metric("Volume Spike", "✅ Yes" if candidate.volume_spike else "❌ No")
+                col3.metric("Consolidation", f"{candidate.consolidation_range:.1f}%")
+                col4.metric("Days in Range", candidate.days_in_consolidation)
+
+
+def render_screener_history():
+    """Render the screener history page."""
+    st.header("📋 Screener History")
+    
+    runs = get_all_screener_runs()
+    
+    if not runs:
+        st.info("No screener runs found. Run the screener to create your first scan!")
+        return
+    
+    # Run selector
+    run_options = {
+        f"{r['run_id']} - {r['candidates_found']} candidates ({r['total_screened']} screened)": r['run_id'] 
+        for r in runs
+    }
+    
+    selected_display = st.selectbox("Select Screener Run", list(run_options.keys()))
+    selected_run_id = run_options[selected_display]
+    
+    col1, col2 = st.columns([4, 1])
+    
+    with col2:
+        if st.button("🗑️ Delete Run", type="secondary"):
+            if delete_screener_run(selected_run_id):
+                st.success("Screener run deleted!")
+                st.rerun()
+    
+    # Get results
+    results = get_screener_results(selected_run_id)
+    
+    # Find the run stats
+    run_info = next((r for r in runs if r['run_id'] == selected_run_id), None)
+    
+    if run_info:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Screened", run_info['total_screened'])
+        col2.metric("🟢 High", run_info['high_priority'])
+        col3.metric("🟡 Medium", run_info['medium_priority'])
+        col4.metric("🔵 Low", run_info['low_priority'])
+    
+    if results:
+        # Filter to candidates only
+        candidates = [r for r in results if r.get('priority') != 'None']
+        
+        if candidates:
+            df = pd.DataFrame(candidates)
+            display_cols = ['symbol', 'priority', 'proximity_pct', 'strength_ratio', 
+                           'above_sma', 'volume_spike', 'gates_passed', 'current_price']
+            display_df = df[[c for c in display_cols if c in df.columns]]
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No candidates found in this screener run.")
 
 
 def render_new_analysis(confirmation_days: int, volume_multiplier: float):
@@ -128,9 +418,18 @@ def render_new_analysis(confirmation_days: int, volume_multiplier: float):
     col1, col2 = st.columns([3, 1])
     
     with col1:
+        # Check if we have screener symbols
+        default_value = "RELIANCE.NS\nTCS.NS\nHDFCBANK.NS\nINFY.NS\nICICIBANK.NS"
+        
+        if 'screener_candidates' in st.session_state:
+            high_symbols = [c.symbol for c in st.session_state['screener_candidates'] 
+                           if c.priority == "High"][:10]
+            if high_symbols:
+                default_value = "\n".join(high_symbols)
+        
         stocks_input = st.text_area(
             "Enter Stock Symbols (one per line)",
-            value="RELIANCE.NS\nTCS.NS\nHDFCBANK.NS\nINFY.NS\nICICIBANK.NS",
+            value=default_value,
             height=150,
             help="Use .NS for NSE stocks, .BO for BSE stocks"
         )
@@ -149,6 +448,14 @@ WIPRO.NS
 TATAMOTORS.NS
 AXISBANK.NS"""
             st.rerun()
+        
+        if 'screener_candidates' in st.session_state:
+            if st.button("From Screener", use_container_width=True):
+                high_symbols = [c.symbol for c in st.session_state['screener_candidates'] 
+                               if c.priority in ["High", "Medium"]]
+                if high_symbols:
+                    st.session_state['analysis_symbols'] = "\n".join(high_symbols)
+                    st.rerun()
     
     # Study description
     study_desc = st.text_input(
@@ -219,16 +526,20 @@ def display_results(results: list, all_data: dict):
     actionable = df[df['status'].str.contains('Inside Box|Breakout', na=False)]
     
     # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("Total Stocks", len(df))
     with col2:
-        st.metric("Actionable Setups", len(actionable))
+        buy_signals = len(df[df['suggestion'].str.contains('BUY', na=False)]) if 'suggestion' in df.columns else 0
+        st.metric("🟢 BUY Signals", buy_signals)
     with col3:
+        watch_signals = len(df[df['suggestion'].str.contains('WATCH', na=False)]) if 'suggestion' in df.columns else 0
+        st.metric("🔵 WATCH", watch_signals)
+    with col4:
         breakouts = len(df[df['status'].str.contains('Breakout', na=False)])
         st.metric("Breakouts", breakouts)
-    with col4:
+    with col5:
         inside_box = len(df[df['status'].str.contains('Inside Box', na=False)])
         st.metric("Inside Box", inside_box)
     
@@ -236,13 +547,32 @@ def display_results(results: list, all_data: dict):
     if len(actionable) > 0:
         st.markdown("### 🎯 Actionable Setups")
         for _, row in actionable.iterrows():
-            emoji = '🟢' if 'Breakout' in str(row['status']) else '🔵'
-            with st.expander(f"{emoji} {row['symbol']} - {row['status']}", expanded=True):
+            suggestion = row.get('suggestion', '⚪ SKIP')
+            suggestion_reason = row.get('suggestion_reason', '')
+            
+            with st.expander(f"{suggestion} {row['symbol']} - {row['status']}", expanded=True):
+                # Show suggestion reason
+                if suggestion_reason:
+                    if 'BUY' in suggestion:
+                        st.success(f"**Suggestion:** {suggestion_reason}")
+                    elif 'WATCH' in suggestion:
+                        st.info(f"**Suggestion:** {suggestion_reason}")
+                    elif 'CAUTION' in suggestion:
+                        st.warning(f"**Suggestion:** {suggestion_reason}")
+                    else:
+                        st.write(f"**Suggestion:** {suggestion_reason}")
+                
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Current Price", f"₹{row['current_price']}")
                 col2.metric("Entry Price", f"₹{row['entry_price']}")
                 col3.metric("Stop Loss", f"₹{row['stop_loss']}")
-                col4.metric("Risk", f"{row['risk_percent']}%")
+                col4.metric("Target (2R)", f"₹{row.get('target_price', 'N/A')}")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Risk", f"{row['risk_percent']}%")
+                col2.metric("Risk:Reward", row['risk_reward'])
+                col3.metric("Box Range", f"₹{row['box_bottom']} - ₹{row['box_top']}")
+                col4.metric("Volume OK", "✅" if row.get('volume_confirmed') else "❌")
                 
                 # Show chart if available
                 if row['symbol'] in all_data and all_data[row['symbol']].get('chart'):
@@ -255,13 +585,35 @@ def display_results(results: list, all_data: dict):
     # Full results table
     st.markdown("### 📋 Full Results")
     
-    # Format for display
-    display_df = df[['symbol', 'status', 'current_price', 'box_top', 'box_bottom', 
-                     'entry_price', 'stop_loss', 'risk_percent', 'risk_reward']].copy()
-    display_df.columns = ['Symbol', 'Status', 'Current Price', 'Box Top', 'Box Bottom',
-                          'Entry Price', 'Stop Loss', 'Risk %', 'Risk:Reward']
+    # Format for display with new columns
+    display_cols = ['symbol', 'suggestion', 'status', 'current_price', 'entry_price', 
+                    'stop_loss', 'target_price', 'risk_percent', 'risk_reward']
+    available_cols = [c for c in display_cols if c in df.columns]
+    display_df = df[available_cols].copy()
+    
+    # Rename columns for better readability
+    col_rename = {
+        'symbol': 'Symbol',
+        'suggestion': 'Suggestion', 
+        'status': 'Status',
+        'current_price': 'Price',
+        'entry_price': 'Entry',
+        'stop_loss': 'Stop Loss',
+        'target_price': 'Target',
+        'risk_percent': 'Risk %',
+        'risk_reward': 'R:R'
+    }
+    display_df.columns = [col_rename.get(c, c) for c in display_df.columns]
     
     st.dataframe(display_df, use_container_width=True, hide_index=True)
+    
+    # Legend
+    st.markdown("""
+    **Legend:** 
+    🟢 BUY = Enter on breakout | 🔵 WATCH = Wait for breakout | 🟡 CAUTION = Low volume | ⚪ SKIP = Not a setup
+    
+    **R:R** = Risk:Reward ratio (e.g., 1:2.5 means for every ₹1 risked, potential gain is ₹2.50)
+    """)
     
     # Download CSV
     csv = df.to_csv(index=False)

@@ -220,56 +220,93 @@ def detect_darvas_boxes(df: pd.DataFrame,
 
 def generate_signals(df: pd.DataFrame, boxes: List[DarvasBox], symbol: str) -> Dict:
     """Generate trading signals based on Darvas Box analysis."""
+    current_price = df['close'].iloc[-1] if len(df) > 0 else None
+    
     if not boxes:
         return {
             'symbol': symbol,
             'status': 'No Setup',
+            'suggestion': '⚪ SKIP',
+            'suggestion_reason': 'Not a Darvas candidate - no box formation',
             'box_top': None,
             'box_bottom': None,
             'entry_price': None,
             'stop_loss': None,
-            'current_price': df['close'].iloc[-1] if len(df) > 0 else None,
-            'target_2r': None,
+            'current_price': round(current_price, 2) if current_price else None,
+            'target_price': None,
+            'risk_amount': None,
+            'reward_amount': None,
             'risk_percent': None,
             'risk_reward': None,
             'volume_confirmed': False
         }
     
     latest_box = boxes[-1]
-    current_price = df['close'].iloc[-1]
     latest_date = df['date'].iloc[-1]
     
-    # Determine status
+    # Determine status and suggestion
     if latest_box.is_active:
         status = 'Inside Box'
+        suggestion = '🔵 WATCH'
+        suggestion_reason = f'Waiting for breakout above ₹{latest_box.top:.2f}'
     elif latest_box.breakout_date is not None:
         days_since_breakout = (latest_date - latest_box.breakout_date).days
         if days_since_breakout <= 5 and latest_box.breakout_volume_confirmed:
             status = 'Breakout (Volume ✓)'
+            suggestion = '🟢 BUY'
+            suggestion_reason = 'Strong breakout with volume confirmation'
         elif days_since_breakout <= 5:
             status = 'Breakout (Low Volume)'
+            suggestion = '🟡 CAUTION'
+            suggestion_reason = 'Breakout without volume - higher risk'
         else:
             status = 'Post-Breakout'
+            suggestion = '⚪ SKIP'
+            suggestion_reason = 'Breakout too far back - wait for new setup'
     else:
         status = 'Box Closed'
+        suggestion = '⚪ SKIP'
+        suggestion_reason = 'Box broken down - not a valid setup'
     
+    # Calculate entry, stop-loss, and target
     entry_price = latest_box.top * (1 + ENTRY_BUFFER)
     stop_loss = latest_box.bottom
     
-    risk = entry_price - stop_loss
-    target = entry_price + (risk * 2)
-    risk_reward = "1:2" if risk > 0 else "N/A"
-    risk_percent = (risk / entry_price) * 100 if entry_price > 0 else 0
+    # Risk and reward calculations
+    risk_amount = entry_price - stop_loss
+    reward_amount = risk_amount * 2  # Standard 2R target
+    target_price = entry_price + reward_amount
+    
+    # Calculate actual risk:reward ratio based on current price vs target
+    if current_price and current_price > 0 and stop_loss > 0:
+        current_risk = current_price - stop_loss
+        current_reward = target_price - current_price
+        
+        if current_risk > 0 and current_reward > 0:
+            rr_ratio = current_reward / current_risk
+            risk_reward = f"1:{rr_ratio:.1f}"
+        elif current_risk <= 0:
+            risk_reward = "Below SL"
+        else:
+            risk_reward = "N/A"
+    else:
+        risk_reward = "N/A"
+    
+    risk_percent = (risk_amount / entry_price) * 100 if entry_price > 0 else 0
     
     return {
         'symbol': symbol,
         'status': status,
+        'suggestion': suggestion,
+        'suggestion_reason': suggestion_reason,
         'box_top': round(latest_box.top, 2),
         'box_bottom': round(latest_box.bottom, 2),
         'entry_price': round(entry_price, 2),
         'stop_loss': round(stop_loss, 2),
         'current_price': round(current_price, 2),
-        'target_2r': round(target, 2),
+        'target_price': round(target_price, 2),
+        'risk_amount': round(risk_amount, 2),
+        'reward_amount': round(reward_amount, 2),
         'risk_percent': round(risk_percent, 2),
         'risk_reward': risk_reward,
         'volume_confirmed': latest_box.breakout_volume_confirmed

@@ -60,6 +60,45 @@ def init_db():
         )
     """)
     
+    # Screener runs table - stores each screening session
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS screener_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT UNIQUE NOT NULL,
+            run_date TIMESTAMP NOT NULL,
+            total_screened INTEGER,
+            candidates_found INTEGER,
+            high_priority INTEGER,
+            medium_priority INTEGER,
+            low_priority INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Screener results table - stores individual stock screening results
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS screener_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            current_price REAL,
+            high_52w REAL,
+            low_52w REAL,
+            proximity_pct REAL,
+            strength_ratio REAL,
+            above_sma BOOLEAN,
+            volume_ratio REAL,
+            volume_spike BOOLEAN,
+            atr_pct REAL,
+            consolidation_range REAL,
+            days_in_consolidation INTEGER,
+            gates_passed INTEGER,
+            priority TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES screener_runs(run_id)
+        )
+    """)
+    
     conn.commit()
     conn.close()
 
@@ -223,6 +262,149 @@ def get_symbol_history(symbol: str) -> List[Dict]:
     conn.close()
     
     return [dict(row) for row in rows]
+
+
+# ============================================
+# SCREENER FUNCTIONS
+# ============================================
+
+def generate_screener_run_id() -> str:
+    """Generate a unique screener run ID based on timestamp."""
+    return f"SCREEN_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+
+def save_screener_run(run_id: str, results: List[Dict], stats: Dict) -> bool:
+    """
+    Save screener run and results to database.
+    
+    Args:
+        run_id: Unique run identifier
+        results: List of ScreenerResult dictionaries
+        stats: Statistics dictionary from screener
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Insert screener run record
+        cursor.execute("""
+            INSERT INTO screener_runs 
+            (run_id, run_date, total_screened, candidates_found, 
+             high_priority, medium_priority, low_priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            run_id,
+            datetime.now(),
+            stats.get('processed', 0),
+            stats.get('candidates', 0),
+            stats.get('high_priority', 0),
+            stats.get('medium_priority', 0),
+            stats.get('low_priority', 0)
+        ))
+        
+        # Insert result records
+        for result in results:
+            cursor.execute("""
+                INSERT INTO screener_results 
+                (run_id, symbol, current_price, high_52w, low_52w,
+                 proximity_pct, strength_ratio, above_sma, volume_ratio,
+                 volume_spike, atr_pct, consolidation_range, 
+                 days_in_consolidation, gates_passed, priority)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                run_id,
+                result.get('symbol'),
+                result.get('current_price'),
+                result.get('high_52w'),
+                result.get('low_52w'),
+                result.get('proximity_pct'),
+                result.get('strength_ratio'),
+                result.get('above_sma'),
+                result.get('volume_ratio'),
+                result.get('volume_spike'),
+                result.get('atr_pct'),
+                result.get('consolidation_range'),
+                result.get('days_in_consolidation'),
+                result.get('gates_passed'),
+                result.get('priority')
+            ))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Error saving screener run: {e}")
+        return False
+
+
+def get_all_screener_runs() -> List[Dict]:
+    """Get list of all screener runs."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT run_id, run_date, total_screened, candidates_found,
+               high_priority, medium_priority, low_priority, created_at
+        FROM screener_runs
+        ORDER BY run_date DESC
+    """)
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+
+def get_screener_results(run_id: str, priority_filter: str = None) -> List[Dict]:
+    """Get results for a specific screener run."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    if priority_filter:
+        cursor.execute("""
+            SELECT * FROM screener_results
+            WHERE run_id = ? AND priority = ?
+            ORDER BY proximity_pct ASC
+        """, (run_id, priority_filter))
+    else:
+        cursor.execute("""
+            SELECT * FROM screener_results
+            WHERE run_id = ?
+            ORDER BY 
+                CASE priority 
+                    WHEN 'High' THEN 1 
+                    WHEN 'Medium' THEN 2 
+                    WHEN 'Low' THEN 3 
+                    ELSE 4 
+                END,
+                proximity_pct ASC
+        """, (run_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+
+def delete_screener_run(run_id: str) -> bool:
+    """Delete a screener run and its results."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM screener_results WHERE run_id = ?", (run_id,))
+        cursor.execute("DELETE FROM screener_runs WHERE run_id = ?", (run_id,))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error deleting screener run: {e}")
+        return False
 
 
 # Initialize database on module import
