@@ -55,6 +55,7 @@ from ollama_integration import (
     generate_darvas_summary,
     OLLAMA_MODEL
 )
+from valuation import calculate_true_north, ValuationResult
 
 
 # Page configuration
@@ -120,7 +121,7 @@ def main():
         # Navigation
         page = st.radio(
             "Navigation",
-            ["🔎 Screener", "🔍 New Analysis", "📚 Study History", "📈 Quick Analyze", "📋 Screener History"],
+            ["🔎 Screener", "🔍 New Analysis", "📚 Study History", "📈 Quick Analyze", "💎 True North", "📋 Screener History"],
             label_visibility="collapsed"
         )
         
@@ -158,6 +159,8 @@ def main():
         render_study_history()
     elif page == "📋 Screener History":
         render_screener_history()
+    elif page == "💎 True North":
+        render_true_north()
     else:
         render_quick_analyze(confirmation_days, volume_multiplier)
 
@@ -894,6 +897,217 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
             st.dataframe(hist_display, use_container_width=True, hide_index=True)
         else:
             st.info("No historical analysis found for this symbol.")
+
+
+def render_true_north():
+    """Render the True North intrinsic value calculator page."""
+    st.header("💎 True North - Intrinsic Value Calculator")
+    
+    st.markdown("""
+    Calculate a stock's fair value using **three valuation models**. The "True North" price 
+    is the average of available models, helping identify undervalued opportunities.
+    
+    | Model | Best For | Method |
+    |-------|----------|--------|
+    | **Benjamin Graham** | Growth-oriented, mid-caps | EPS × Growth multiplier |
+    | **DCF** | Cash-rich, stable large-caps | Discounted future cash flows |
+    | **EPV** | Cyclical, no-growth companies | Current earnings power |
+    """)
+    
+    st.markdown("---")
+    
+    # Stock input
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        symbol = st.text_input(
+            "Enter Stock Symbol",
+            placeholder="e.g., RELIANCE.NS or TCS.NS",
+            value=st.session_state.get('valuation_symbol', 'RELIANCE.NS'),
+            key="valuation_symbol_input"
+        )
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        calculate_btn = st.button("💎 Calculate Value", type="primary", use_container_width=True)
+    
+    # Stock search helper
+    if symbol and len(symbol) >= 2 and not symbol.endswith('.NS') and not symbol.endswith('.BO'):
+        results = search_symbols(symbol, limit=5)
+        if results:
+            st.caption("Did you mean:")
+            cols = st.columns(5)
+            for i, stock in enumerate(results[:5]):
+                with cols[i]:
+                    if st.button(f"{stock['symbol']}", key=f"val_{stock['yf_symbol']}"):
+                        st.session_state['valuation_symbol'] = stock['yf_symbol']
+                        st.rerun()
+    
+    # Calculate and store in session state
+    if calculate_btn and symbol:
+        with st.spinner(f"Calculating intrinsic value for {symbol}..."):
+            result = calculate_true_north(symbol.strip())
+        
+        st.session_state['valuation_result'] = result
+        st.session_state['valuation_symbol'] = symbol.strip()
+    
+    # Display results from session state
+    if 'valuation_result' in st.session_state and st.session_state['valuation_result']:
+        result = st.session_state['valuation_result']
+        
+        if result.error:
+            st.error(f"❌ {result.error}")
+            return
+        
+        # Main valuation result
+        st.markdown("### 🎯 Valuation Result")
+        
+        # True North value highlight
+        col1, col2, col3 = st.columns([2, 2, 2])
+        
+        with col1:
+            st.metric(
+                "Current Price",
+                f"₹{result.current_price:.2f}" if result.current_price else "N/A"
+            )
+        
+        with col2:
+            st.metric(
+                "💎 True North Value",
+                f"₹{result.true_north_value:.2f}" if result.true_north_value else "N/A",
+                delta=f"{result.upside_percent:.1f}%" if result.upside_percent else None
+            )
+        
+        with col3:
+            # Valuation status with color
+            status = result.valuation_status
+            if "Undervalued" in status:
+                st.success(f"**{status}**")
+            elif "Fairly" in status:
+                st.info(f"**{status}**")
+            elif "Slightly" in status:
+                st.warning(f"**{status}**")
+            elif "Overvalued" in status:
+                st.error(f"**{status}**")
+            else:
+                st.info(f"**{status}**")
+        
+        # Individual model values
+        st.markdown("### 📊 Model Breakdown")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**📚 Benjamin Graham**")
+            if result.graham_value:
+                graham_diff = ((result.graham_value - result.current_price) / result.current_price) * 100
+                st.metric(
+                    "Graham Value",
+                    f"₹{result.graham_value:.2f}",
+                    delta=f"{graham_diff:.1f}%"
+                )
+                st.caption(f"EPS: ₹{result.eps:.2f}" if result.eps else "")
+                st.caption(f"Growth: {result.growth_rate:.1f}%" if result.growth_rate else "")
+            else:
+                st.info("Insufficient data (needs positive EPS)")
+        
+        with col2:
+            st.markdown("**💰 DCF Model**")
+            if result.dcf_value:
+                dcf_diff = ((result.dcf_value - result.current_price) / result.current_price) * 100
+                st.metric(
+                    "DCF Value",
+                    f"₹{result.dcf_value:.2f}",
+                    delta=f"{dcf_diff:.1f}%"
+                )
+                st.caption("Based on projected cash flows")
+            else:
+                st.info("Insufficient data (needs FCF)")
+        
+        with col3:
+            st.markdown("**⚡ EPV Model**")
+            if result.epv_value:
+                epv_diff = ((result.epv_value - result.current_price) / result.current_price) * 100
+                st.metric(
+                    "EPV Value",
+                    f"₹{result.epv_value:.2f}",
+                    delta=f"{epv_diff:.1f}%"
+                )
+                st.caption("No-growth earnings power")
+            else:
+                st.info("Insufficient data (needs EBIT)")
+        
+        # Interpretation guide
+        st.markdown("---")
+        st.markdown("### 📖 How to Interpret")
+        
+        if result.graham_value and result.epv_value:
+            if result.graham_value > result.epv_value * 1.2:
+                st.info("📈 **Growth Premium**: Graham value > EPV suggests the market expects significant growth. Verify growth assumptions.")
+            elif result.epv_value > result.graham_value * 1.2:
+                st.warning("⚠️ **Value Trap Risk**: EPV > Graham may indicate the company is destroying value by growing.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **If True North > Current Price:**
+            - Stock may be undervalued
+            - Consider for investment with proper due diligence
+            - Check qualitative factors (management, moat)
+            """)
+        
+        with col2:
+            st.markdown("""
+            **If True North < Current Price:**
+            - Stock may be overvalued
+            - Wait for better entry point
+            - Or the market knows something the models don't
+            """)
+        
+        # AI Summary
+        st.markdown("### 🤖 AI Valuation Summary")
+        
+        if check_ollama_connection():
+            if st.button("✨ Generate AI Analysis", key="valuation_ai_btn"):
+                with st.spinner(f"Generating analysis using {OLLAMA_MODEL}..."):
+                    valuation_context = f"""
+Stock: {result.symbol}
+Current Price: ₹{result.current_price:.2f}
+True North (Fair Value): ₹{result.true_north_value:.2f if result.true_north_value else 0}
+Valuation Status: {result.valuation_status}
+Upside/Downside: {f'{result.upside_percent:.1f}%' if result.upside_percent else 'N/A'}
+
+Graham Value: ₹{result.graham_value:.2f if result.graham_value else 0}
+DCF Value: ₹{result.dcf_value:.2f if result.dcf_value else 0}
+EPV Value: ₹{result.epv_value:.2f if result.epv_value else 0}
+
+EPS: ₹{result.eps:.2f if result.eps else 0}
+Growth Rate: {f'{result.growth_rate:.1f}%' if result.growth_rate else 'N/A'}
+"""
+                    prompt = f"""Based on this intrinsic value analysis, provide a brief investment recommendation:
+
+{valuation_context}
+
+Give: 1) Overall verdict (BUY/HOLD/AVOID), 2) Key insight, 3) Risk to consider. Keep it under 100 words."""
+                    
+                    import requests
+                    try:
+                        response = requests.post(
+                            "http://localhost:11435/api/generate",
+                            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+                            timeout=60
+                        )
+                        if response.status_code == 200:
+                            ai_summary = response.json().get('response', '')
+                            st.session_state['valuation_ai_summary'] = ai_summary
+                    except:
+                        st.session_state['valuation_ai_summary'] = "Error connecting to Ollama"
+            
+            if st.session_state.get('valuation_ai_summary'):
+                st.success(st.session_state['valuation_ai_summary'])
+        else:
+            st.info("💡 AI Analysis available when Ollama is running on port 11435.")
 
 
 if __name__ == "__main__":
