@@ -144,15 +144,42 @@ def main():
     # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/fluency/96/stock-market.png", width=80)
-        st.title("📊 Darvas Box V2")
+        st.title("📊 Stock Analyzer V2")
         st.markdown("---")
         
-        # Navigation
-        page = st.radio(
-            "Navigation",
-            ["🔎 Screener", "🔍 New Analysis", "📚 Study History", "📈 Quick Analyze", "💎 True North", "🎯 Target Projection", "📋 Screener History"],
-            label_visibility="collapsed"
-        )
+        # Initialize page state
+        if 'current_page' not in st.session_state:
+            st.session_state['current_page'] = "🔎 Screener"
+        
+        # DARVAS Menu
+        with st.expander("📈 **DARVAS**", expanded=True):
+            if st.button("🔎 Screener", key="nav_screener", use_container_width=True):
+                st.session_state['current_page'] = "🔎 Screener"
+                st.rerun()
+            if st.button("🔍 New Analysis", key="nav_new", use_container_width=True):
+                st.session_state['current_page'] = "🔍 New Analysis"
+                st.rerun()
+            if st.button("📈 Quick Analyze", key="nav_quick", use_container_width=True):
+                st.session_state['current_page'] = "📈 Quick Analyze"
+                st.rerun()
+            if st.button("📚 Study History", key="nav_study", use_container_width=True):
+                st.session_state['current_page'] = "📚 Study History"
+                st.rerun()
+            if st.button("📋 Screener History", key="nav_screener_hist", use_container_width=True):
+                st.session_state['current_page'] = "📋 Screener History"
+                st.rerun()
+        
+        # Intrinsic Value Menu
+        with st.expander("💎 **Intrinsic Value**", expanded=True):
+            if st.button("💎 True North", key="nav_truenorth", use_container_width=True):
+                st.session_state['current_page'] = "💎 True North"
+                st.rerun()
+        
+        # Targets Menu
+        with st.expander("🎯 **Targets**", expanded=True):
+            if st.button("🎯 Target Projection", key="nav_target", use_container_width=True):
+                st.session_state['current_page'] = "🎯 Target Projection"
+                st.rerun()
         
         st.markdown("---")
         
@@ -178,6 +205,9 @@ def main():
         st.markdown("---")
         st.caption("Built for NSE/BSE Markets 🇮🇳")
         st.caption(f"Nifty 500: {get_symbol_count()} stocks")
+    
+    # Get current page
+    page = st.session_state.get('current_page', "🔎 Screener")
     
     # Main content based on navigation
     if page == "🔎 Screener":
@@ -1546,6 +1576,169 @@ def render_target_projection():
         )
         
         st.plotly_chart(fig_trajectory, width='stretch')
+        
+        # ---- NEW SECTION: Projected Investment Value ----
+        st.markdown("---")
+        st.markdown("### 💰 Projected Investment Value")
+        st.markdown("See how your investment would grow under different scenarios.")
+        
+        # Investment amount input
+        col_invest1, col_invest2 = st.columns([2, 3])
+        with col_invest1:
+            investment_amount = st.number_input(
+                "Investment Amount (₹)",
+                min_value=1000,
+                max_value=100000000,
+                value=st.session_state.get('tp_investment', 100000),
+                step=10000,
+                help="Enter the amount you plan to invest"
+            )
+            st.session_state['tp_investment'] = investment_amount
+        
+        with col_invest2:
+            invest_chart_type = st.toggle("📊 Bar Chart", value=st.session_state.get('tp_invest_chart_bar', False),
+                                           key="invest_chart_toggle",
+                                           help="Toggle between Line and Bar chart")
+            st.session_state['tp_invest_chart_bar'] = invest_chart_type
+        
+        # Calculate investment growth for each scenario
+        # Growth rate is derived from the price projections
+        if current_price > 0 and len(conservative_prices) > 1:
+            # Calculate implied CAGR from the price projections
+            conservative_growth_rate = (conservative_prices[-1] / conservative_prices[0]) ** (1 / years) - 1
+            optimistic_growth_rate = (optimistic_prices[-1] / optimistic_prices[0]) ** (1 / years) - 1
+        else:
+            conservative_growth_rate = result.inputs.projected_cagr / 100
+            optimistic_growth_rate = result.inputs.projected_cagr / 100
+        
+        fd_growth_rate = fd_rate / 100
+        
+        # Calculate future values for each year
+        invest_conservative = []
+        invest_optimistic = []
+        invest_fd = []
+        
+        for year_idx in range(len(trajectory_years)):
+            invest_conservative.append(investment_amount * ((1 + conservative_growth_rate) ** year_idx))
+            invest_optimistic.append(investment_amount * ((1 + optimistic_growth_rate) ** year_idx))
+            invest_fd.append(investment_amount * ((1 + fd_growth_rate) ** year_idx))
+        
+        # Create investment projection chart
+        fig_invest = go.Figure()
+        
+        if invest_chart_type:
+            # Bar Chart
+            fig_invest.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=invest_conservative,
+                name=f'Conservative',
+                marker_color='#4CAF50',
+                text=[f'₹{v:,.0f}' for v in invest_conservative],
+                textposition='outside'
+            ))
+            
+            fig_invest.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=invest_optimistic,
+                name=f'Optimistic',
+                marker_color='#2196F3',
+                text=[f'₹{v:,.0f}' for v in invest_optimistic],
+                textposition='outside'
+            ))
+            
+            fig_invest.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=invest_fd,
+                name=f'Bank FD ({fd_rate}%)',
+                marker_color='#FF9800',
+                text=[f'₹{v:,.0f}' for v in invest_fd],
+                textposition='outside'
+            ))
+            
+            fig_invest.update_layout(barmode='group')
+        else:
+            # Line Chart
+            fig_invest.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=invest_conservative,
+                mode='lines+markers',
+                name='Conservative',
+                line=dict(color='#4CAF50', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig_invest.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=invest_optimistic,
+                mode='lines+markers',
+                name='Optimistic',
+                line=dict(color='#2196F3', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig_invest.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=invest_fd,
+                mode='lines+markers',
+                name=f'Bank FD ({fd_rate}%)',
+                line=dict(color='#FF9800', width=2, dash='dot'),
+                marker=dict(size=6, symbol='diamond')
+            ))
+            
+            # Add initial investment reference line
+            fig_invest.add_hline(
+                y=investment_amount,
+                line_dash="dash",
+                line_color="gray",
+                annotation_text=f"Initial: ₹{investment_amount:,.0f}",
+                annotation_position="right"
+            )
+        
+        fig_invest.update_layout(
+            title=f"₹{investment_amount:,.0f} Investment Growth Projection",
+            xaxis_title="Year",
+            yaxis_title="Value (₹)",
+            template="plotly_dark",
+            height=450,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig_invest, width='stretch')
+        
+        # Summary of projected values
+        st.markdown("#### 📈 Investment Summary")
+        col_sum1, col_sum2, col_sum3 = st.columns(3)
+        
+        with col_sum1:
+            gain_cons = invest_conservative[-1] - investment_amount
+            st.metric(
+                "Conservative",
+                f"₹{invest_conservative[-1]:,.0f}",
+                f"+₹{gain_cons:,.0f} ({(gain_cons/investment_amount)*100:.1f}%)"
+            )
+        
+        with col_sum2:
+            gain_opt = invest_optimistic[-1] - investment_amount
+            st.metric(
+                "Optimistic",
+                f"₹{invest_optimistic[-1]:,.0f}",
+                f"+₹{gain_opt:,.0f} ({(gain_opt/investment_amount)*100:.1f}%)"
+            )
+        
+        with col_sum3:
+            gain_fd = invest_fd[-1] - investment_amount
+            st.metric(
+                f"Bank FD ({fd_rate}%)",
+                f"₹{invest_fd[-1]:,.0f}",
+                f"+₹{gain_fd:,.0f} ({(gain_fd/investment_amount)*100:.1f}%)"
+            )
         
         # Sensitivity Analysis (R2 requirement)
         st.markdown("### 📊 Sensitivity Analysis (Margin of Safety)")
