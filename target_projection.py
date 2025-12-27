@@ -139,6 +139,7 @@ class ProjectionResult:
     
     # Target prices
     conservative_target: float = 0.0  # Using current P/E
+    base_target: float = 0.0  # Using average P/E
     optimistic_target: float = 0.0  # Using target P/E
     
     # Sensitivity analysis results
@@ -256,7 +257,11 @@ def calculate_projection_core(
     # Case 1 (Conservative): EPS × Current P/E
     conservative_target = final_eps * current_pe
     
-    # Case 2 (Optimistic): EPS × Target P/E
+    # Case 2 (Base): EPS × Average P/E
+    base_pe = (current_pe + target_pe) / 2
+    base_target = final_eps * base_pe
+    
+    # Case 3 (Optimistic): EPS × Target P/E
     optimistic_target = final_eps * target_pe
     
     return (
@@ -265,7 +270,8 @@ def calculate_projection_core(
         round(final_sales, 2), 
         round(final_profit, 2), 
         round(final_eps, 2), 
-        round(conservative_target, 2), 
+        round(conservative_target, 2),
+        round(base_target, 2),
         round(optimistic_target, 2)
     )
 
@@ -291,7 +297,7 @@ def calculate_projection(inputs: ProjectionInputs) -> ProjectionResult:
     
     # Core calculation
     (yearly_sales, yearly_profit, final_sales, final_profit, 
-     final_eps, conservative_target, optimistic_target) = calculate_projection_core(
+     final_eps, conservative_target, base_target, optimistic_target) = calculate_projection_core(
         inputs.current_sales,
         inputs.projected_cagr,
         inputs.projection_years,
@@ -306,7 +312,7 @@ def calculate_projection(inputs: ProjectionInputs) -> ProjectionResult:
     high_cagr = inputs.projected_cagr + 5
     
     # Low CAGR scenario
-    _, _, _, _, low_eps, low_conservative, low_optimistic = calculate_projection_core(
+    _, _, _, _, low_eps, low_conservative, low_base, low_optimistic = calculate_projection_core(
         inputs.current_sales,
         low_cagr,
         inputs.projection_years,
@@ -317,7 +323,7 @@ def calculate_projection(inputs: ProjectionInputs) -> ProjectionResult:
     )
     
     # High CAGR scenario
-    _, _, _, _, high_eps, high_conservative, high_optimistic = calculate_projection_core(
+    _, _, _, _, high_eps, high_conservative, high_base, high_optimistic = calculate_projection_core(
         inputs.current_sales,
         high_cagr,
         inputs.projection_years,
@@ -335,6 +341,7 @@ def calculate_projection(inputs: ProjectionInputs) -> ProjectionResult:
         final_profit=final_profit,
         final_eps=final_eps,
         conservative_target=conservative_target,
+        base_target=base_target,
         optimistic_target=optimistic_target,
         sensitivity_low_cagr=low_cagr,
         sensitivity_low_conservative=low_conservative,

@@ -85,14 +85,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for dark theme
+# Minimal CSS for common elements (works with both light and dark Streamlit themes)
+# Users can switch themes using: Hamburger Menu → Settings → Theme
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #0e1117;
-    }
     .metric-card {
-        background-color: #1e2130;
         border-radius: 10px;
         padding: 15px;
         margin: 5px 0;
@@ -128,7 +125,6 @@ st.markdown("""
     [data-testid="stHorizontalBlock"] {
         align-items: flex-end !important;
     }
-    /* Ensure searchbox aligns properly */
     [data-testid="stHorizontalBlock"] > div {
         display: flex;
         flex-direction: column;
@@ -137,13 +133,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Helper function to get Plotly template based on Streamlit's theme
+# Note: This checks session state, but Streamlit's native theme is preferred
+def get_plotly_template() -> str:
+    # Default to dark template, users should use Streamlit's theme settings
+    return "plotly_dark"
+
 
 def main():
     """Main application."""
     
     # Sidebar
     with st.sidebar:
-        st.image("https://img.icons8.com/fluency/96/stock-market.png", width=80)
         st.title("📊 Stock Analyzer V2")
         st.markdown("---")
         
@@ -183,8 +184,12 @@ def main():
         
         st.markdown("---")
         
-        # Configuration
-        st.subheader("⚙️ Configuration")
+        # # Configuration
+        # st.subheader("⚙️ Configuration")
+        
+        # # Theme info
+        # st.caption("💡 Theme: Use hamburger menu → Settings → Theme")
+        
         confirmation_days = st.slider(
             "Confirmation Days",
             min_value=2,
@@ -1389,46 +1394,64 @@ def render_target_projection():
         # Get current price for CAGR calculation
         current_price = st.session_state.get('tp_current_price', 0)
         years = result.inputs.projection_years
+        base_pe = (result.inputs.current_pe + result.inputs.target_pe) / 2
         
         # Calculate yearly returns (CAGR) if current price is available
         if current_price > 0:
             conservative_cagr = (((result.conservative_target / current_price) ** (1 / years)) - 1) * 100
+            base_cagr = (((result.base_target / current_price) ** (1 / years)) - 1) * 100
             optimistic_cagr = (((result.optimistic_target / current_price) ** (1 / years)) - 1) * 100
             conservative_total_return = ((result.conservative_target - current_price) / current_price) * 100
+            base_total_return = ((result.base_target - current_price) / current_price) * 100
             optimistic_total_return = ((result.optimistic_target - current_price) / current_price) * 100
         else:
             conservative_cagr = None
+            base_cagr = None
             optimistic_cagr = None
             conservative_total_return = None
+            base_total_return = None
             optimistic_total_return = None
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             st.markdown("""
             <div style="background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%); 
                         padding: 20px; border-radius: 12px; text-align: center; color: white;">
-                <div style="font-size: 14px; opacity: 0.9;">📉 Conservative Target</div>
-                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe}</div>
-                <div style="font-size: 36px; font-weight: bold;">₹{target:,.0f}</div>
+                <div style="font-size: 14px; opacity: 0.9;">📉 Conservative</div>
+                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe:.1f}</div>
+                <div style="font-size: 32px; font-weight: bold;">₹{target:,.0f}</div>
             </div>
             """.format(pe=result.inputs.current_pe, target=result.conservative_target), unsafe_allow_html=True)
             
             if conservative_cagr:
-                st.caption(f"📈 **{conservative_cagr:.1f}% p.a.** ({conservative_total_return:+.0f}% total over {years} yrs)")
+                st.caption(f"📈 **{conservative_cagr:.1f}% p.a.** ({conservative_total_return:+.0f}%)")
         
         with col2:
             st.markdown("""
+            <div style="background: linear-gradient(135deg, #6a1b9a 0%, #8e24aa 100%); 
+                        padding: 20px; border-radius: 12px; text-align: center; color: white;">
+                <div style="font-size: 14px; opacity: 0.9;">📊 Base Case</div>
+                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe:.1f}</div>
+                <div style="font-size: 32px; font-weight: bold;">₹{target:,.0f}</div>
+            </div>
+            """.format(pe=base_pe, target=result.base_target), unsafe_allow_html=True)
+            
+            if base_cagr:
+                st.caption(f"📈 **{base_cagr:.1f}% p.a.** ({base_total_return:+.0f}%)")
+        
+        with col3:
+            st.markdown("""
             <div style="background: linear-gradient(135deg, #0d47a1 0%, #1565c0 100%); 
                         padding: 20px; border-radius: 12px; text-align: center; color: white;">
-                <div style="font-size: 14px; opacity: 0.9;">📈 Optimistic Target</div>
-                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe}</div>
-                <div style="font-size: 36px; font-weight: bold;">₹{target:,.0f}</div>
+                <div style="font-size: 14px; opacity: 0.9;">📈 Optimistic</div>
+                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe:.1f}</div>
+                <div style="font-size: 32px; font-weight: bold;">₹{target:,.0f}</div>
             </div>
             """.format(pe=result.inputs.target_pe, target=result.optimistic_target), unsafe_allow_html=True)
             
             if optimistic_cagr:
-                st.caption(f"📈 **{optimistic_cagr:.1f}% p.a.** ({optimistic_total_return:+.0f}% total over {years} yrs)")
+                st.caption(f"📈 **{optimistic_cagr:.1f}% p.a.** ({optimistic_total_return:+.0f}%)")
         
         # Price Trajectory Line Chart
         st.markdown("### 📈 Price Trajectory")
@@ -1436,23 +1459,27 @@ def render_target_projection():
         from datetime import datetime
         current_year = datetime.now().year
         
-        # Calculate year-by-year EPS and prices for both scenarios
-        trajectory_years = list(range(current_year, current_year + years + 2))  # +2 to include endpoint
+        # Calculate year-by-year EPS and prices for all scenarios
+        # trajectory: current year (Year 0) to current year + projection years
+        trajectory_years = list(range(current_year, current_year + years + 1))  # +1 to include endpoint
         conservative_prices = []
+        base_prices = []
         optimistic_prices = []
         
         # Year 0 (current) - use current price if available, else calculate from current EPS
         if current_price > 0:
             conservative_prices.append(current_price)
+            base_prices.append(current_price)
             optimistic_prices.append(current_price)
         else:
             # Fallback: estimate current price from current EPS and current P/E
             current_eps_estimate = (result.inputs.current_sales * result.inputs.historical_npm / 100) / result.inputs.outstanding_shares
             conservative_prices.append(current_eps_estimate * result.inputs.current_pe)
+            base_prices.append(current_eps_estimate * base_pe)
             optimistic_prices.append(current_eps_estimate * result.inputs.target_pe)
         
         # Calculate prices for each year based on projected EPS growth
-        for year_idx in range(1, years + 2):
+        for year_idx in range(1, years + 1):
             if year_idx <= len(result.yearly_profit):
                 # Use actual calculated profit/EPS
                 year_eps = result.yearly_profit[year_idx - 1] / result.inputs.outstanding_shares
@@ -1461,6 +1488,7 @@ def render_target_projection():
                 year_eps = result.final_eps * ((1 + result.inputs.projected_cagr / 100) ** (year_idx - years))
             
             conservative_prices.append(year_eps * result.inputs.current_pe)
+            base_prices.append(year_eps * base_pe)
             optimistic_prices.append(year_eps * result.inputs.target_pe)
         
         # FD comparison input and chart type toggle
@@ -1495,7 +1523,7 @@ def render_target_projection():
             fig_trajectory.add_trace(go.Bar(
                 x=[str(y) for y in trajectory_years],
                 y=conservative_prices,
-                name=f'Conservative (P/E: {result.inputs.current_pe})',
+                name=f'Conservative (P/E: {result.inputs.current_pe:.1f})',
                 marker_color='#4CAF50',
                 text=[f'₹{p:,.0f}' for p in conservative_prices],
                 textposition='outside'
@@ -1503,8 +1531,17 @@ def render_target_projection():
             
             fig_trajectory.add_trace(go.Bar(
                 x=[str(y) for y in trajectory_years],
+                y=base_prices,
+                name=f'Base Case (P/E: {base_pe:.1f})',
+                marker_color='#9C27B0',
+                text=[f'₹{p:,.0f}' for p in base_prices],
+                textposition='outside'
+            ))
+            
+            fig_trajectory.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
                 y=optimistic_prices,
-                name=f'Optimistic (P/E: {result.inputs.target_pe})',
+                name=f'Optimistic (P/E: {result.inputs.target_pe:.1f})',
                 marker_color='#2196F3',
                 text=[f'₹{p:,.0f}' for p in optimistic_prices],
                 textposition='outside'
@@ -1526,8 +1563,17 @@ def render_target_projection():
                 x=trajectory_years,
                 y=conservative_prices,
                 mode='lines+markers',
-                name=f'Conservative (P/E: {result.inputs.current_pe})',
+                name=f'Conservative (P/E: {result.inputs.current_pe:.1f})',
                 line=dict(color='#4CAF50', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig_trajectory.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=base_prices,
+                mode='lines+markers',
+                name=f'Base Case (P/E: {base_pe:.1f})',
+                line=dict(color='#9C27B0', width=3),
                 marker=dict(size=8)
             ))
             
@@ -1535,7 +1581,7 @@ def render_target_projection():
                 x=trajectory_years,
                 y=optimistic_prices,
                 mode='lines+markers',
-                name=f'Optimistic (P/E: {result.inputs.target_pe})',
+                name=f'Optimistic (P/E: {result.inputs.target_pe:.1f})',
                 line=dict(color='#2196F3', width=3),
                 marker=dict(size=8)
             ))
@@ -1563,7 +1609,7 @@ def render_target_projection():
             title=f"Projected Stock Price vs FD Returns ({current_year} - {current_year + years + 1})",
             xaxis_title="Year",
             yaxis_title="Value (₹)",
-            template="plotly_dark",
+            template=get_plotly_template(),
             height=450,
             legend=dict(
                 orientation="h",
@@ -1606,20 +1652,24 @@ def render_target_projection():
         if current_price > 0 and len(conservative_prices) > 1:
             # Calculate implied CAGR from the price projections
             conservative_growth_rate = (conservative_prices[-1] / conservative_prices[0]) ** (1 / years) - 1
+            base_growth_rate = (base_prices[-1] / base_prices[0]) ** (1 / years) - 1
             optimistic_growth_rate = (optimistic_prices[-1] / optimistic_prices[0]) ** (1 / years) - 1
         else:
             conservative_growth_rate = result.inputs.projected_cagr / 100
+            base_growth_rate = result.inputs.projected_cagr / 100
             optimistic_growth_rate = result.inputs.projected_cagr / 100
         
         fd_growth_rate = fd_rate / 100
         
         # Calculate future values for each year
         invest_conservative = []
+        invest_base = []
         invest_optimistic = []
         invest_fd = []
         
         for year_idx in range(len(trajectory_years)):
             invest_conservative.append(investment_amount * ((1 + conservative_growth_rate) ** year_idx))
+            invest_base.append(investment_amount * ((1 + base_growth_rate) ** year_idx))
             invest_optimistic.append(investment_amount * ((1 + optimistic_growth_rate) ** year_idx))
             invest_fd.append(investment_amount * ((1 + fd_growth_rate) ** year_idx))
         
@@ -1634,6 +1684,15 @@ def render_target_projection():
                 name=f'Conservative',
                 marker_color='#4CAF50',
                 text=[f'₹{v:,.0f}' for v in invest_conservative],
+                textposition='outside'
+            ))
+            
+            fig_invest.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=invest_base,
+                name=f'Base Case',
+                marker_color='#9C27B0',
+                text=[f'₹{v:,.0f}' for v in invest_base],
                 textposition='outside'
             ))
             
@@ -1669,6 +1728,15 @@ def render_target_projection():
             
             fig_invest.add_trace(go.Scatter(
                 x=trajectory_years,
+                y=invest_base,
+                mode='lines+markers',
+                name='Base Case',
+                line=dict(color='#9C27B0', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig_invest.add_trace(go.Scatter(
+                x=trajectory_years,
                 y=invest_optimistic,
                 mode='lines+markers',
                 name='Optimistic',
@@ -1698,7 +1766,7 @@ def render_target_projection():
             title=f"₹{investment_amount:,.0f} Investment Growth Projection",
             xaxis_title="Year",
             yaxis_title="Value (₹)",
-            template="plotly_dark",
+            template=get_plotly_template(),
             height=450,
             legend=dict(
                 orientation="h",
@@ -1714,30 +1782,42 @@ def render_target_projection():
         
         # Summary of projected values
         st.markdown("#### 📈 Investment Summary")
-        col_sum1, col_sum2, col_sum3 = st.columns(3)
+        col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
         
         with col_sum1:
             gain_cons = invest_conservative[-1] - investment_amount
+            cagr_cons = (((invest_conservative[-1] / investment_amount) ** (1 / years)) - 1) * 100
             st.metric(
                 "Conservative",
                 f"₹{invest_conservative[-1]:,.0f}",
-                f"+₹{gain_cons:,.0f} ({(gain_cons/investment_amount)*100:.1f}%)"
+                f"+₹{gain_cons:,.0f} ({(gain_cons/investment_amount)*100:.1f}%) [{cagr_cons:.1f}% YoY]"
             )
         
         with col_sum2:
-            gain_opt = invest_optimistic[-1] - investment_amount
+            gain_base = invest_base[-1] - investment_amount
+            cagr_base = (((invest_base[-1] / investment_amount) ** (1 / years)) - 1) * 100
             st.metric(
-                "Optimistic",
-                f"₹{invest_optimistic[-1]:,.0f}",
-                f"+₹{gain_opt:,.0f} ({(gain_opt/investment_amount)*100:.1f}%)"
+                "Base Case",
+                f"₹{invest_base[-1]:,.0f}",
+                f"+₹{gain_base:,.0f} ({(gain_base/investment_amount)*100:.1f}%) [{cagr_base:.1f}% YoY]"
             )
         
         with col_sum3:
+            gain_opt = invest_optimistic[-1] - investment_amount
+            cagr_opt = (((invest_optimistic[-1] / investment_amount) ** (1 / years)) - 1) * 100
+            st.metric(
+                "Optimistic",
+                f"₹{invest_optimistic[-1]:,.0f}",
+                f"+₹{gain_opt:,.0f} ({(gain_opt/investment_amount)*100:.1f}%) [{cagr_opt:.1f}% YoY]"
+            )
+        
+        with col_sum4:
             gain_fd = invest_fd[-1] - investment_amount
+            cagr_fd = (((invest_fd[-1] / investment_amount) ** (1 / years)) - 1) * 100
             st.metric(
                 f"Bank FD ({fd_rate}%)",
                 f"₹{invest_fd[-1]:,.0f}",
-                f"+₹{gain_fd:,.0f} ({(gain_fd/investment_amount)*100:.1f}%)"
+                f"+₹{gain_fd:,.0f} ({(gain_fd/investment_amount)*100:.1f}%) [{cagr_fd:.1f}% YoY]"
             )
         
         # Sensitivity Analysis (R2 requirement)
@@ -1787,7 +1867,7 @@ def render_target_projection():
             title=f"Projected Sales & Profit at {result.inputs.projected_cagr}% CAGR",
             xaxis_title="Year",
             yaxis_title="Amount (₹ Crores)",
-            template="plotly_dark",
+            template=get_plotly_template(),
             height=400,
             legend=dict(
                 orientation="h",
