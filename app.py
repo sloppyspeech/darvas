@@ -9,6 +9,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import time
+from streamlit_searchbox import st_searchbox
 
 from darvas_core import (
     analyze_stock, 
@@ -56,6 +57,24 @@ from ollama_integration import (
     OLLAMA_MODEL
 )
 from valuation import calculate_true_north, ValuationResult
+from target_projection import ProjectionInputs, calculate_projection, fetch_stock_financials, StockFinancials
+
+
+def search_stock_symbols(query: str) -> list:
+    """
+    Search function for st_searchbox autocomplete.
+    Returns list of tuples (display_text, value).
+    """
+    if not query or len(query) < 2:
+        return []
+    
+    results = search_symbols(query, limit=10)
+    if not results:
+        return []
+    
+    # Return list of tuples (display_text, yf_symbol)
+    return [(f"{r['symbol']} - {r.get('company_name', '')[:30]} ({r['exchange']})", r['yf_symbol']) 
+            for r in results]
 
 
 # Page configuration
@@ -105,6 +124,16 @@ st.markdown("""
     .gate-fail {
         color: #f44336;
     }
+    /* Fix searchbox alignment with buttons */
+    [data-testid="stHorizontalBlock"] {
+        align-items: flex-end !important;
+    }
+    /* Ensure searchbox aligns properly */
+    [data-testid="stHorizontalBlock"] > div {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -121,7 +150,7 @@ def main():
         # Navigation
         page = st.radio(
             "Navigation",
-            ["🔎 Screener", "🔍 New Analysis", "📚 Study History", "📈 Quick Analyze", "💎 True North", "📋 Screener History"],
+            ["🔎 Screener", "🔍 New Analysis", "📚 Study History", "📈 Quick Analyze", "💎 True North", "🎯 Target Projection", "📋 Screener History"],
             label_visibility="collapsed"
         )
         
@@ -161,6 +190,8 @@ def main():
         render_screener_history()
     elif page == "💎 True North":
         render_true_north()
+    elif page == "🎯 Target Projection":
+        render_target_projection()
     else:
         render_quick_analyze(confirmation_days, volume_multiplier)
 
@@ -229,7 +260,7 @@ def render_screener():
     
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        run_btn = st.button("🚀 Run", type="primary", use_container_width=True)
+        run_btn = st.button("🚀 Run", type="primary", width='stretch')
     
     # Show database info
     st.caption(f"📊 Database: {nse_count} NSE + {bse_count} BSE = {total_count} total stocks")
@@ -361,7 +392,7 @@ def display_screener_results(candidates, stats, priority_filter):
         'Price': '₹{:.2f}'
     })
     
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    st.dataframe(styled_df, width='stretch', hide_index=True)
     
     # Export options
     col1, col2 = st.columns(2)
@@ -456,7 +487,7 @@ def render_screener_history():
                            'above_sma', 'volume_spike', 'gates_passed', 'current_price']
             display_df = df[[c for c in display_cols if c in df.columns]]
             
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(display_df, width='stretch', hide_index=True)
         else:
             st.info("No candidates found in this screener run.")
 
@@ -468,53 +499,34 @@ def render_new_analysis(confirmation_days: int, volume_multiplier: float):
     # Stock search section
     st.markdown("### 🔎 Search & Add Stocks")
     
-    col1, col2, col3 = st.columns([2, 2, 1])
+    # Stock search on its own row
+    selected_stock = st_searchbox(
+        search_stock_symbols,
+        key="new_analysis_searchbox",
+        placeholder="Type to search stocks...",
+        clear_on_submit=True,
+    )
+    # Add selected stock to the list
+    if selected_stock:
+        current = st.session_state.get('selected_symbols', [])
+        if selected_stock not in current:
+            current.append(selected_stock)
+            st.session_state['selected_symbols'] = current
+            st.rerun()
     
+    # Exchange filter and refresh button on same row
+    col1, col2 = st.columns([3, 1])
     with col1:
-        search_query = st.text_input(
-            "Search by symbol or company name",
-            placeholder="e.g., RELIANCE or Tata",
-            key="stock_search"
-        )
-    
-    with col2:
         exchange_filter = st.selectbox(
             "Exchange",
             ["All", "NSE", "BSE"],
             key="exchange_filter"
         )
-    
-    with col3:
-        st.markdown("<br>", unsafe_allow_html=True)
+    with col2:
         if st.button("🔄 Refresh DB", help="Re-fetch stock list from NSE/BSE"):
             with st.spinner("Fetching stocks..."):
                 nse, bse = refresh_stock_symbols()
                 st.success(f"Updated: {nse} NSE, {bse} BSE stocks")
-    
-    # Show search results
-    if search_query and len(search_query) >= 2:
-        results = search_symbols(search_query, limit=15)
-        
-        if results:
-            st.markdown("**Search Results** (click to add):")
-            
-            # Create columns for results
-            cols = st.columns(3)
-            for i, stock in enumerate(results):
-                col_idx = i % 3
-                with cols[col_idx]:
-                    display_text = f"{stock['symbol']} ({stock['exchange']})"
-                    if st.button(display_text, key=f"add_{stock['yf_symbol']}", use_container_width=True):
-                        # Add to text area
-                        current = st.session_state.get('selected_symbols', [])
-                        if stock['yf_symbol'] not in current:
-                            current.append(stock['yf_symbol'])
-                            st.session_state['selected_symbols'] = current
-                            st.rerun()
-            
-            st.caption(f"Showing top {len(results)} results for '{search_query}'")
-        else:
-            st.info(f"No stocks found matching '{search_query}'")
     
     st.markdown("---")
     
@@ -541,19 +553,19 @@ def render_new_analysis(confirmation_days: int, volume_multiplier: float):
     
     with col2:
         st.markdown("### Quick Add")
-        if st.button("Nifty 50 Sample", use_container_width=True):
+        if st.button("Nifty 50 Sample", width='stretch'):
             st.session_state['selected_symbols'] = [
                 "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
                 "BHARTIARTL.NS", "SBIN.NS", "WIPRO.NS", "TATAMOTORS.NS", "AXISBANK.NS"
             ]
             st.rerun()
         
-        if st.button("Clear All", use_container_width=True):
+        if st.button("Clear All", width='stretch'):
             st.session_state['selected_symbols'] = []
             st.rerun()
         
         if 'screener_candidates' in st.session_state:
-            if st.button("From Screener", use_container_width=True):
+            if st.button("From Screener", width='stretch'):
                 high_symbols = [c.symbol for c in st.session_state['screener_candidates'] 
                                if c.priority in ["High", "Medium"]]
                 if high_symbols:
@@ -572,7 +584,7 @@ def render_new_analysis(confirmation_days: int, volume_multiplier: float):
     )
     
     # Run analysis button
-    if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+    if st.button("🚀 Run Analysis", type="primary", width='stretch'):
         stocks = [s.strip() for s in stocks_input.strip().split('\n') if s.strip()]
         
         if not stocks:
@@ -686,7 +698,7 @@ def display_results(results: list, all_data: dict):
                 if row['symbol'] in all_data and all_data[row['symbol']].get('chart'):
                     st.plotly_chart(
                         all_data[row['symbol']]['chart'], 
-                        use_container_width=True,
+                        width='stretch',
                         key=f"chart_{row['symbol']}"
                     )
     
@@ -713,7 +725,7 @@ def display_results(results: list, all_data: dict):
     }
     display_df.columns = [col_rename.get(c, c) for c in display_df.columns]
     
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width='stretch', hide_index=True)
     
     # Legend
     st.markdown("""
@@ -787,26 +799,28 @@ def render_study_history():
                        'entry_price', 'stop_loss', 'risk_percent', 'risk_reward']
         display_df = df[[c for c in display_cols if c in df.columns]]
         
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width='stretch', hide_index=True)
 
 
 def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
     """Render the quick analyze page for single stock."""
     st.header("📈 Quick Analysis")
     
-    col1, col2 = st.columns([3, 1])
+    # Stock search
+    selected = st_searchbox(
+        search_stock_symbols,
+        key="quick_searchbox",
+        placeholder="Type to search stocks (e.g., RELIANCE, TCS)...",
+        default=st.session_state.get('quick_symbol', None),
+        clear_on_submit=False,
+    )
+    if selected:
+        st.session_state['quick_symbol'] = selected
+        symbol = selected
+    else:
+        symbol = st.session_state.get('quick_symbol', '')
     
-    with col1:
-        symbol = st.text_input(
-            "Enter Stock Symbol",
-            placeholder="e.g., RELIANCE.NS",
-            value=st.session_state.get('quick_symbol', 'RELIANCE.NS'),
-            key="quick_symbol_input"
-        )
-    
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        analyze_btn = st.button("🔍 Analyze", type="primary", use_container_width=True)
+    analyze_btn = st.button("🔍 Analyze", type="primary")
     
     # Run analysis and store in session state
     if analyze_btn and symbol:
@@ -860,7 +874,7 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
         
         # Chart
         st.markdown("### 📈 Chart")
-        st.plotly_chart(result['chart'], use_container_width=True, key="quick_chart")
+        st.plotly_chart(result['chart'], width='stretch', key="quick_chart")
         
         # AI Summary Section
         st.markdown("### 🤖 AI Analysis Summary")
@@ -894,7 +908,7 @@ def render_quick_analyze(confirmation_days: int, volume_multiplier: float):
             hist_df = pd.DataFrame(history)
             display_cols = ['study_date', 'status', 'current_price', 'entry_price', 'stop_loss']
             hist_display = hist_df[[c for c in display_cols if c in hist_df.columns]]
-            st.dataframe(hist_display, use_container_width=True, hide_index=True)
+            st.dataframe(hist_display, width='stretch', hide_index=True)
         else:
             st.info("No historical analysis found for this symbol.")
 
@@ -917,31 +931,20 @@ def render_true_north():
     st.markdown("---")
     
     # Stock input
-    col1, col2 = st.columns([3, 1])
+    selected = st_searchbox(
+        search_stock_symbols,
+        key="valuation_searchbox",
+        placeholder="Type to search stocks (e.g., RELIANCE, TCS)...",
+        default=st.session_state.get('valuation_symbol', None),
+        clear_on_submit=False,
+    )
+    if selected:
+        st.session_state['valuation_symbol'] = selected
+        symbol = selected
+    else:
+        symbol = st.session_state.get('valuation_symbol', '')
     
-    with col1:
-        symbol = st.text_input(
-            "Enter Stock Symbol",
-            placeholder="e.g., RELIANCE.NS or TCS.NS",
-            value=st.session_state.get('valuation_symbol', 'RELIANCE.NS'),
-            key="valuation_symbol_input"
-        )
-    
-    with col2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        calculate_btn = st.button("💎 Calculate Value", type="primary", use_container_width=True)
-    
-    # Stock search helper
-    if symbol and len(symbol) >= 2 and not symbol.endswith('.NS') and not symbol.endswith('.BO'):
-        results = search_symbols(symbol, limit=5)
-        if results:
-            st.caption("Did you mean:")
-            cols = st.columns(5)
-            for i, stock in enumerate(results[:5]):
-                with cols[i]:
-                    if st.button(f"{stock['symbol']}", key=f"val_{stock['yf_symbol']}"):
-                        st.session_state['valuation_symbol'] = stock['yf_symbol']
-                        st.rerun()
+    calculate_btn = st.button("💎 Calculate Value", type="primary")
     
     # Calculate and store in session state
     if calculate_btn and symbol:
@@ -1108,6 +1111,540 @@ Give: 1) Overall verdict (BUY/HOLD/AVOID), 2) Key insight, 3) Risk to consider. 
                 st.success(st.session_state['valuation_ai_summary'])
         else:
             st.info("💡 AI Analysis available when Ollama is running on port 11435.")
+
+
+def render_target_projection():
+    """Render the Stock Target Projection Tool page."""
+    import plotly.graph_objects as go
+    
+    st.header("🎯 Stock Target Projection Tool")
+    
+    st.markdown("""
+    Estimate **5-year price targets** based on sales growth projections and P/E valuations.
+    This tool provides a standardized framework for estimating future stock prices.
+    
+    | Step | Description |
+    |------|-------------|
+    | 1️⃣ | Enter stock symbol to auto-fetch financials |
+    | 2️⃣ | Review/adjust fetched data and growth assumptions |
+    | 3️⃣ | Define valuation multiples (Current P/E, Target P/E) |
+    | 4️⃣ | Review targets with sensitivity analysis |
+    """)
+    
+    st.markdown("---")
+    
+    # Stock Symbol Input Section
+    st.subheader("🔎 Stock Symbol")
+    
+    selected = st_searchbox(
+        search_stock_symbols,
+        key="tp_searchbox",
+        placeholder="Type to search stocks (e.g., RELIANCE, TCS)...",
+        default=st.session_state.get('tp_symbol', None),
+        clear_on_submit=False,
+    )
+    if selected:
+        symbol_input = selected
+        # Auto-trigger fetch when a new symbol is selected
+        if selected != st.session_state.get('tp_symbol', ''):
+            st.session_state['tp_pending_fetch'] = selected
+    else:
+        symbol_input = st.session_state.get('tp_symbol', '')
+    
+    col_btn, col_info = st.columns([1, 2])
+    with col_btn:
+        fetch_btn = st.button("📥 Fetch Data", type="primary")
+    with col_info:
+        if 'tp_company_name' in st.session_state and st.session_state['tp_company_name']:
+            st.success(f"✅ {st.session_state['tp_company_name']}")
+    
+    # Auto-fetch on selection or button click
+    should_fetch = fetch_btn or st.session_state.get('tp_pending_fetch')
+    if should_fetch and symbol_input:
+        symbol = symbol_input.strip().upper() if isinstance(symbol_input, str) else symbol_input
+        if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
+            symbol = symbol + '.NS'  # Default to NSE
+        
+        st.session_state['tp_pending_fetch'] = None  # Clear pending fetch
+        
+        with st.spinner(f"Fetching data for {symbol}..."):
+            financials = fetch_stock_financials(symbol)
+        
+        if financials.error:
+            st.error(f"❌ {financials.error}")
+        else:
+            # Store fetched data in session state
+            st.session_state['tp_symbol'] = symbol
+            st.session_state['tp_company_name'] = financials.company_name
+            st.session_state['tp_sales'] = financials.current_sales
+            st.session_state['tp_npm'] = financials.historical_npm
+            st.session_state['tp_shares'] = financials.outstanding_shares
+            st.session_state['tp_cagr'] = financials.revenue_growth
+            st.session_state['tp_current_pe'] = financials.current_pe if financials.current_pe > 0 else 15.0
+            st.session_state['tp_target_pe'] = financials.industry_pe if financials.industry_pe > 0 else financials.current_pe
+            st.session_state['tp_current_price'] = financials.current_price
+            st.session_state['tp_eps'] = financials.eps
+            st.success(f"✅ Data fetched for **{financials.company_name}** (₹{financials.current_price:.2f})")
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # Input form
+    st.subheader("📊 Input Parameters")
+    
+    # Show current price if available
+    if 'tp_current_price' in st.session_state and st.session_state['tp_current_price'] > 0:
+        st.info(f"📈 Current Market Price: **₹{st.session_state['tp_current_price']:.2f}**")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**Revenue & Profitability**")
+        current_sales = st.number_input(
+            "Current Sales (₹ Crores)",
+            min_value=0.0,
+            value=st.session_state.get('tp_sales', 189.0),
+            step=1.0,
+            help="Most recent TTM (Trailing Twelve Months) revenue"
+        )
+        
+        historical_npm = st.number_input(
+            "Historical NPM (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=st.session_state.get('tp_npm', 10.0),
+            step=0.5,
+            help="Average Net Profit Margin over the last 5 years"
+        )
+        
+        outstanding_shares = st.number_input(
+            "Outstanding Shares (Crores)",
+            min_value=0.0,
+            value=st.session_state.get('tp_shares', 0.8),
+            step=0.01,
+            format="%.2f",
+            help="Total number of shares currently issued"
+        )
+    
+    with col2:
+        st.markdown("**Growth Assumptions**")
+        projected_cagr = st.number_input(
+            "Projected CAGR (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=st.session_state.get('tp_cagr', 20.0),
+            step=1.0,
+            help="Estimated annual growth (Default: 5-year historical average)"
+        )
+        
+        projection_years = st.number_input(
+            "Projection Period (Years)",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.get('tp_years', 5),
+            step=1,
+            help="Years into the future (Default: 5 years)"
+        )
+    
+    with col3:
+        st.markdown("**Valuation Multiples**")
+        current_pe = st.number_input(
+            "Current P/E",
+            min_value=0.1,
+            value=st.session_state.get('tp_current_pe', 16.0),
+            step=0.5,
+            help="The stock's current valuation multiple"
+        )
+        
+        target_pe = st.number_input(
+            "Target P/E",
+            min_value=0.1,
+            value=st.session_state.get('tp_target_pe', 42.0),
+            step=0.5,
+            help="The industry average or exit multiple"
+        )
+    
+    # Growth Catalysts (R3 requirement)
+    st.markdown("---")
+    st.subheader("📝 Growth Catalysts Checklist")
+    st.caption("List the reasons why the projected CAGR is realistic (e.g., Capex, Market Share, New Products)")
+    
+    growth_catalysts = st.text_area(
+        "Growth Catalysts",
+        value=st.session_state.get('tp_catalysts', ""),
+        height=100,
+        placeholder="Example:\n• New capacity expansion (2x by FY26)\n• Market share gain in export markets\n• New product launches in Q3",
+        label_visibility="collapsed"
+    )
+    
+    # Calculate button
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        calculate_btn = st.button("🎯 Calculate Target Prices", type="primary", width='stretch')
+    
+    # Store inputs in session state
+    if calculate_btn:
+        st.session_state['tp_sales'] = current_sales
+        st.session_state['tp_npm'] = historical_npm
+        st.session_state['tp_shares'] = outstanding_shares
+        st.session_state['tp_cagr'] = projected_cagr
+        st.session_state['tp_years'] = projection_years
+        st.session_state['tp_current_pe'] = current_pe
+        st.session_state['tp_target_pe'] = target_pe
+        st.session_state['tp_catalysts'] = growth_catalysts
+        
+        # Parse catalysts into list
+        catalysts_list = [c.strip().lstrip('•-').strip() 
+                        for c in growth_catalysts.split('\n') 
+                        if c.strip()]
+        
+        # Create inputs object
+        inputs = ProjectionInputs(
+            current_sales=current_sales,
+            projected_cagr=projected_cagr,
+            projection_years=projection_years,
+            historical_npm=historical_npm,
+            outstanding_shares=outstanding_shares,
+            current_pe=current_pe,
+            target_pe=target_pe,
+            growth_catalysts=catalysts_list
+        )
+        
+        # Calculate projection
+        result = calculate_projection(inputs)
+        st.session_state['tp_result'] = result
+    
+    # Display results
+    if 'tp_result' in st.session_state and st.session_state['tp_result']:
+        result = st.session_state['tp_result']
+        
+        if not result.is_valid:
+            st.error(f"❌ Validation Error: {result.error_message}")
+            return
+        
+        st.markdown("---")
+        st.subheader("📈 Projection Results")
+        
+        # Final year metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                f"Year {result.inputs.projection_years} Sales",
+                f"₹{result.final_sales:,.2f} Cr"
+            )
+        
+        with col2:
+            st.metric(
+                f"Year {result.inputs.projection_years} Profit",
+                f"₹{result.final_profit:,.2f} Cr"
+            )
+        
+        with col3:
+            st.metric(
+                f"Year {result.inputs.projection_years} EPS",
+                f"₹{result.final_eps:,.2f}"
+            )
+        
+        with col4:
+            growth_multiple = result.final_sales / result.inputs.current_sales if result.inputs.current_sales > 0 else 0
+            st.metric(
+                "Growth Multiple",
+                f"{growth_multiple:.2f}x"
+            )
+        
+        # Target prices
+        st.markdown("### 🎯 Target Prices")
+        
+        # Get current price for CAGR calculation
+        current_price = st.session_state.get('tp_current_price', 0)
+        years = result.inputs.projection_years
+        
+        # Calculate yearly returns (CAGR) if current price is available
+        if current_price > 0:
+            conservative_cagr = (((result.conservative_target / current_price) ** (1 / years)) - 1) * 100
+            optimistic_cagr = (((result.optimistic_target / current_price) ** (1 / years)) - 1) * 100
+            conservative_total_return = ((result.conservative_target - current_price) / current_price) * 100
+            optimistic_total_return = ((result.optimistic_target - current_price) / current_price) * 100
+        else:
+            conservative_cagr = None
+            optimistic_cagr = None
+            conservative_total_return = None
+            optimistic_total_return = None
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%); 
+                        padding: 20px; border-radius: 12px; text-align: center; color: white;">
+                <div style="font-size: 14px; opacity: 0.9;">📉 Conservative Target</div>
+                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe}</div>
+                <div style="font-size: 36px; font-weight: bold;">₹{target:,.0f}</div>
+            </div>
+            """.format(pe=result.inputs.current_pe, target=result.conservative_target), unsafe_allow_html=True)
+            
+            if conservative_cagr:
+                st.caption(f"📈 **{conservative_cagr:.1f}% p.a.** ({conservative_total_return:+.0f}% total over {years} yrs)")
+        
+        with col2:
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #0d47a1 0%, #1565c0 100%); 
+                        padding: 20px; border-radius: 12px; text-align: center; color: white;">
+                <div style="font-size: 14px; opacity: 0.9;">📈 Optimistic Target</div>
+                <div style="font-size: 11px; opacity: 0.7; margin-bottom: 8px;">P/E: {pe}</div>
+                <div style="font-size: 36px; font-weight: bold;">₹{target:,.0f}</div>
+            </div>
+            """.format(pe=result.inputs.target_pe, target=result.optimistic_target), unsafe_allow_html=True)
+            
+            if optimistic_cagr:
+                st.caption(f"📈 **{optimistic_cagr:.1f}% p.a.** ({optimistic_total_return:+.0f}% total over {years} yrs)")
+        
+        # Price Trajectory Line Chart
+        st.markdown("### 📈 Price Trajectory")
+        
+        from datetime import datetime
+        current_year = datetime.now().year
+        
+        # Calculate year-by-year EPS and prices for both scenarios
+        trajectory_years = list(range(current_year, current_year + years + 2))  # +2 to include endpoint
+        conservative_prices = []
+        optimistic_prices = []
+        
+        # Year 0 (current) - use current price if available, else calculate from current EPS
+        if current_price > 0:
+            conservative_prices.append(current_price)
+            optimistic_prices.append(current_price)
+        else:
+            # Fallback: estimate current price from current EPS and current P/E
+            current_eps_estimate = (result.inputs.current_sales * result.inputs.historical_npm / 100) / result.inputs.outstanding_shares
+            conservative_prices.append(current_eps_estimate * result.inputs.current_pe)
+            optimistic_prices.append(current_eps_estimate * result.inputs.target_pe)
+        
+        # Calculate prices for each year based on projected EPS growth
+        for year_idx in range(1, years + 2):
+            if year_idx <= len(result.yearly_profit):
+                # Use actual calculated profit/EPS
+                year_eps = result.yearly_profit[year_idx - 1] / result.inputs.outstanding_shares
+            else:
+                # Extend with same growth rate
+                year_eps = result.final_eps * ((1 + result.inputs.projected_cagr / 100) ** (year_idx - years))
+            
+            conservative_prices.append(year_eps * result.inputs.current_pe)
+            optimistic_prices.append(year_eps * result.inputs.target_pe)
+        
+        # FD comparison input and chart type toggle
+        col_fd1, col_fd2, col_fd3 = st.columns([2, 2, 1])
+        with col_fd1:
+            fd_rate = st.number_input(
+                "🏦 Bank FD Rate (%)",
+                min_value=0.0,
+                max_value=20.0,
+                value=st.session_state.get('tp_fd_rate', 7.0),
+                step=0.25,
+                help="Enter current FD interest rate for comparison"
+            )
+            st.session_state['tp_fd_rate'] = fd_rate
+        
+        with col_fd2:
+            chart_type = st.toggle("📊 Bar Chart", value=st.session_state.get('tp_chart_bar', False), 
+                                   help="Toggle between Line and Bar chart")
+            st.session_state['tp_chart_bar'] = chart_type
+        
+        # Calculate FD returns (compound interest)
+        fd_prices = []
+        starting_price = current_price if current_price > 0 else conservative_prices[0]
+        for year_idx in range(len(trajectory_years)):
+            fd_value = starting_price * ((1 + fd_rate / 100) ** year_idx)
+            fd_prices.append(fd_value)
+        
+        fig_trajectory = go.Figure()
+        
+        if chart_type:
+            # Bar Chart
+            fig_trajectory.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=conservative_prices,
+                name=f'Conservative (P/E: {result.inputs.current_pe})',
+                marker_color='#4CAF50',
+                text=[f'₹{p:,.0f}' for p in conservative_prices],
+                textposition='outside'
+            ))
+            
+            fig_trajectory.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=optimistic_prices,
+                name=f'Optimistic (P/E: {result.inputs.target_pe})',
+                marker_color='#2196F3',
+                text=[f'₹{p:,.0f}' for p in optimistic_prices],
+                textposition='outside'
+            ))
+            
+            fig_trajectory.add_trace(go.Bar(
+                x=[str(y) for y in trajectory_years],
+                y=fd_prices,
+                name=f'Bank FD ({fd_rate}%)',
+                marker_color='#FF9800',
+                text=[f'₹{p:,.0f}' for p in fd_prices],
+                textposition='outside'
+            ))
+            
+            fig_trajectory.update_layout(barmode='group')
+        else:
+            # Line Chart
+            fig_trajectory.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=conservative_prices,
+                mode='lines+markers',
+                name=f'Conservative (P/E: {result.inputs.current_pe})',
+                line=dict(color='#4CAF50', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig_trajectory.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=optimistic_prices,
+                mode='lines+markers',
+                name=f'Optimistic (P/E: {result.inputs.target_pe})',
+                line=dict(color='#2196F3', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig_trajectory.add_trace(go.Scatter(
+                x=trajectory_years,
+                y=fd_prices,
+                mode='lines+markers',
+                name=f'Bank FD ({fd_rate}%)',
+                line=dict(color='#FF9800', width=2, dash='dot'),
+                marker=dict(size=6, symbol='diamond')
+            ))
+            
+            # Add current price reference line if available
+            if current_price > 0:
+                fig_trajectory.add_hline(
+                    y=current_price, 
+                    line_dash="dash", 
+                    line_color="gray",
+                    annotation_text=f"Current: ₹{current_price:,.0f}",
+                    annotation_position="right"
+                )
+        
+        fig_trajectory.update_layout(
+            title=f"Projected Stock Price vs FD Returns ({current_year} - {current_year + years + 1})",
+            xaxis_title="Year",
+            yaxis_title="Value (₹)",
+            template="plotly_dark",
+            height=450,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig_trajectory, width='stretch')
+        
+        # Sensitivity Analysis (R2 requirement)
+        st.markdown("### 📊 Sensitivity Analysis (Margin of Safety)")
+        
+        show_sensitivity = st.checkbox("Show CAGR ± 5% Sensitivity", value=True)
+        
+        if show_sensitivity:
+            sensitivity_data = {
+                "Scenario": ["🔽 Conservative", "📊 Base Case", "🔼 Optimistic"],
+                "CAGR": [f"{result.sensitivity_low_cagr:.0f}%", f"{result.inputs.projected_cagr:.0f}%", f"{result.sensitivity_high_cagr:.0f}%"],
+                "Conservative Target": [f"₹{result.sensitivity_low_conservative:,.0f}", f"₹{result.conservative_target:,.0f}", f"₹{result.sensitivity_high_conservative:,.0f}"],
+                "Optimistic Target": [f"₹{result.sensitivity_low_optimistic:,.0f}", f"₹{result.optimistic_target:,.0f}", f"₹{result.sensitivity_high_optimistic:,.0f}"]
+            }
+            
+            st.table(sensitivity_data)
+        
+        # Bar Chart Visualization (R4 requirement)
+        st.markdown("### 📊 5-Year Sales vs Net Profit Projection")
+        
+        years = [f"Year {i}" for i in range(1, len(result.yearly_sales) + 1)]
+        
+        fig = go.Figure()
+        
+        # Sales bars
+        fig.add_trace(go.Bar(
+            name='Sales (₹ Cr)',
+            x=years,
+            y=result.yearly_sales,
+            marker_color='#4CAF50',
+            text=[f"₹{s:,.0f}" for s in result.yearly_sales],
+            textposition='outside'
+        ))
+        
+        # Net Profit bars
+        fig.add_trace(go.Bar(
+            name='Net Profit (₹ Cr)',
+            x=years,
+            y=result.yearly_profit,
+            marker_color='#2196F3',
+            text=[f"₹{p:,.0f}" for p in result.yearly_profit],
+            textposition='outside'
+        ))
+        
+        fig.update_layout(
+            barmode='group',
+            title=f"Projected Sales & Profit at {result.inputs.projected_cagr}% CAGR",
+            xaxis_title="Year",
+            yaxis_title="Amount (₹ Crores)",
+            template="plotly_dark",
+            height=400,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        st.plotly_chart(fig, width='stretch')
+        
+        # Growth Catalysts Display
+        if result.inputs.growth_catalysts:
+            st.markdown("### ✅ Growth Catalysts Justification")
+            for i, catalyst in enumerate(result.inputs.growth_catalysts, 1):
+                st.markdown(f"{i}. {catalyst}")
+        
+        # Calculation breakdown
+        with st.expander("📐 View Calculation Details"):
+            st.markdown(f"""
+            **Step 1: Revenue Projection**
+            ```
+            Year {result.inputs.projection_years} Sales = Current Sales × (1 + CAGR)^n
+            Year {result.inputs.projection_years} Sales = ₹{result.inputs.current_sales} Cr × (1 + {result.inputs.projected_cagr}%)^{result.inputs.projection_years}
+            Year {result.inputs.projection_years} Sales = ₹{result.final_sales:,.2f} Cr
+            ```
+            
+            **Step 2: Net Profit & EPS**
+            ```
+            Net Profit = Year {result.inputs.projection_years} Sales × NPM
+            Net Profit = ₹{result.final_sales:,.2f} Cr × {result.inputs.historical_npm}%
+            Net Profit = ₹{result.final_profit:,.2f} Cr
+            
+            EPS = Net Profit / Outstanding Shares
+            EPS = ₹{result.final_profit:,.2f} Cr / {result.inputs.outstanding_shares} Cr shares
+            EPS = ₹{result.final_eps:,.2f}
+            ```
+            
+            **Step 3: Target Prices**
+            ```
+            Conservative Target = EPS × Current P/E
+            Conservative Target = ₹{result.final_eps:.2f} × {result.inputs.current_pe}
+            Conservative Target = ₹{result.conservative_target:,.0f}
+            
+            Optimistic Target = EPS × Target P/E
+            Optimistic Target = ₹{result.final_eps:.2f} × {result.inputs.target_pe}
+            Optimistic Target = ₹{result.optimistic_target:,.0f}
+            ```
+            """)
 
 
 if __name__ == "__main__":
