@@ -58,6 +58,12 @@ from ollama_integration import (
 )
 from valuation import calculate_true_north, ValuationResult
 from target_projection import ProjectionInputs, calculate_projection, fetch_stock_financials, StockFinancials
+from oi_analysis import (
+    OIData, fetch_oi_data, fetch_multiple_oi_data, classify_quadrant, calculate_pcr,
+    get_stocks_by_sector, get_sectors, get_quadrant_color, get_quadrant_emoji,
+    format_oi_for_llm, get_market_sentiment_summary, FNO_STOCKS
+)
+from ollama_integration import generate_oi_insight, check_ollama_connection
 
 
 def search_stock_symbols(query: str) -> list:
@@ -182,6 +188,12 @@ def main():
                 st.session_state['current_page'] = "🎯 Target Projection"
                 st.rerun()
         
+        # Analysis Menu
+        with st.expander("📊 **Analysis**", expanded=True):
+            if st.button("📈 Open Interest", key="nav_oi", use_container_width=True):
+                st.session_state['current_page'] = "📈 Open Interest"
+                st.rerun()
+        
         st.markdown("---")
         
         # # Configuration
@@ -227,6 +239,8 @@ def main():
         render_true_north()
     elif page == "🎯 Target Projection":
         render_target_projection()
+    elif page == "📈 Open Interest":
+        render_open_interest()
     else:
         render_quick_analyze(confirmation_days, volume_multiplier)
 
@@ -1146,6 +1160,290 @@ Give: 1) Overall verdict (BUY/HOLD/AVOID), 2) Key insight, 3) Risk to consider. 
                 st.success(st.session_state['valuation_ai_summary'])
         else:
             st.info("💡 AI Analysis available when Ollama is running on port 11435.")
+
+
+def render_open_interest():
+    """Render the Open Interest Analysis page with quadrant matrix and AI insights."""
+    import plotly.graph_objects as go
+    import plotly.express as px
+    
+    st.header("📈 Open Interest Analysis")
+    
+    st.markdown("""
+    Analyze **Price vs. Open Interest** movement to identify market conviction.
+    Stocks are classified into four quadrants based on their Price (ΔP) and OI (ΔOI) changes.
+    
+    | Quadrant | Price | OI | Signal |
+    |----------|-------|----|---------| 
+    | 🟢 Long Buildup | ↑ | ↑ | Bullish - New longs entering |
+    | 🔴 Short Buildup | ↓ | ↑ | Bearish - New shorts entering |
+    | 🔵 Short Covering | ↑ | ↓ | Rally - Shorts exiting |
+    | 🟠 Long Unwinding | ↓ | ↓ | Bears winning - Longs exiting |
+    """)
+    
+    st.markdown("---")
+    
+    # Initialize session state for OI analysis
+    if 'oi_data_list' not in st.session_state:
+        st.session_state['oi_data_list'] = []
+    if 'oi_selected_stock' not in st.session_state:
+        st.session_state['oi_selected_stock'] = None
+    if 'oi_ai_insight' not in st.session_state:
+        st.session_state['oi_ai_insight'] = None
+    if 'oi_use_mock' not in st.session_state:
+        st.session_state['oi_use_mock'] = False
+    
+    # Create tabs for different analysis modes
+    tab_individual, tab_sector = st.tabs(["🔍 Individual Stock Analysis", "📊 Sector Analysis"])
+    
+    # ==================== TAB 1: Individual Stock Analysis ====================
+    with tab_individual:
+        st.markdown("### 🤖 AI Analyst - Individual Stock")
+        st.caption("Search and analyze any F&O stock independently")
+        
+        # Demo mode toggle
+        col_search, col_mode = st.columns([3, 1])
+        with col_search:
+            # Stock search
+            selected_symbol = st_searchbox(
+                search_stock_symbols,
+                placeholder="Type stock name (e.g., RELIANCE, TCS, HDFCBANK)",
+                key="oi_individual_stock_search",
+                clear_on_submit=False
+            )
+        with col_mode:
+            use_mock_individual = st.checkbox("📊 Demo Mode", value=False, help="Check to use simulated data", key="oi_demo_individual")
+        
+        if selected_symbol:
+            # Extract symbol from yf format if needed
+            if isinstance(selected_symbol, str):
+                clean_symbol = selected_symbol.replace(".NS", "").replace(".BO", "").upper()
+            else:
+                clean_symbol = str(selected_symbol).replace(".NS", "").replace(".BO", "").upper()
+            
+            st.info(f"📌 **Selected Symbol:** {clean_symbol} (from: {selected_symbol})")
+            
+            # Session state key for this stock's data
+            stock_data_key = f"oi_stock_data_{clean_symbol}"
+            
+            # Fetch button
+            if st.button(f"🔄 Fetch OI Data for {clean_symbol}", type="primary", use_container_width=True, key="btn_fetch_individual"):
+                if use_mock_individual:
+                    st.warning("📊 Using **Demo Mode** - data is simulated")
+                else:
+                    st.info(f"📡 Fetching LIVE data from NSE for {clean_symbol}...")
+                
+                with st.spinner(f"Fetching OI data for {clean_symbol}..."):
+                    selected_data = fetch_oi_data(clean_symbol, use_mock=use_mock_individual)
+                    if selected_data:
+                        st.session_state[stock_data_key] = selected_data
+                        st.session_state['oi_selected_stock'] = selected_data
+                        st.session_state['oi_ai_insight'] = None  # Clear previous insight
+                        data_source = "Demo" if use_mock_individual else "NSE Live"
+                        st.success(f"✅ Fetched {data_source} data for {clean_symbol}")
+                    else:
+                        if use_mock_individual:
+                            st.error(f"❌ Could not generate demo data for {clean_symbol}")
+                        else:
+                            st.error(f"❌ **{clean_symbol} is not in the F&O segment** or NSE API is unavailable.")
+                            st.warning("💡 This stock does not have derivatives trading. Try a valid F&O stock like RELIANCE, HDFCBANK, TCS, etc. Or enable **Demo Mode** for simulated data.")
+            
+            # Show data if we have it in session state
+            if stock_data_key in st.session_state:
+                selected_data = st.session_state[stock_data_key]
+                
+                # Display stock details
+                st.markdown("---")
+                st.markdown(f"### {get_quadrant_emoji(selected_data.quadrant)} {selected_data.symbol}")
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.metric("💰 Spot Price", f"₹{selected_data.spot_price:,.2f}")
+                    st.metric("📈 Price Δ", f"{selected_data.price_change_pct:+.2f}%")
+                with col_b:
+                    st.metric("📊 OI Δ (Curr)", f"{selected_data.current_month_oi_change_pct:+.2f}%")
+                    st.metric("📊 OI Δ (Next)", f"{selected_data.next_month_oi_change_pct:+.2f}%")
+                
+                st.info(f"**Quadrant:** {selected_data.quadrant}")
+                st.caption(f"PCR Ratio: {selected_data.pcr_ratio} | Timestamp: {selected_data.timestamp}")
+                
+                # AI Insight button
+                if st.button("🧠 Get AI Insight", type="primary", use_container_width=True, key="btn_ai_insight_individual"):
+                    if not check_ollama_connection():
+                        st.error("⚠️ Ollama not available. Please start Ollama on port 11435.")
+                        st.session_state['oi_ai_insight'] = "**Error:** Cannot connect to Ollama LLM."
+                    else:
+                        with st.spinner("🧠 Generating AI insight..."):
+                            llm_data = format_oi_for_llm(selected_data)
+                            insight = generate_oi_insight(llm_data)
+                            st.session_state['oi_ai_insight'] = insight
+                        if insight and not insight.startswith("Error"):
+                            st.success("✅ AI Insight generated!")
+                
+                # Display AI insight if available
+                if st.session_state.get('oi_ai_insight'):
+                    st.markdown("---")
+                    st.markdown("#### 🤖 AI Analysis")
+                    st.markdown(st.session_state['oi_ai_insight'])
+            else:
+                st.caption("👆 Click the button above to fetch OI data for this stock")
+        else:
+            st.info("🔍 Type a stock name in the search box above to get started")
+    
+    # ==================== TAB 2: Sector Analysis ====================
+    with tab_sector:
+        st.markdown("### 📊 Sector-wise OI Analysis")
+        
+        # Sector Filter and Fetch Button
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            sectors = get_sectors()
+            selected_sector = st.selectbox(
+                "🏭 Sector Filter",
+                options=sectors,
+                index=0,
+                help="Filter stocks by sector"
+            )
+        
+        with col2:
+            use_mock = st.checkbox("📊 Demo Mode", value=False, help="Uncheck to fetch LIVE data from NSE", key="oi_demo_sector")
+            st.session_state['oi_use_mock'] = use_mock
+        
+        with col3:
+            btn_label = "🔄 Fetch Demo Data" if use_mock else "🔄 Fetch LIVE Data"
+            if st.button(btn_label, type="primary", use_container_width=True):
+                if not use_mock:
+                    st.info("📡 Fetching live data from NSE... This may take a moment.")
+                with st.spinner("Fetching OI data..."):
+                    stocks = get_stocks_by_sector(selected_sector)
+                    st.session_state['oi_data_list'] = fetch_multiple_oi_data(stocks, use_mock=use_mock)
+                    st.session_state['oi_selected_stock'] = None
+                    st.session_state['oi_ai_insight'] = None
+                data_source = "demo" if use_mock else "LIVE NSE"
+                st.success(f"✅ Fetched {data_source} data for {len(st.session_state['oi_data_list'])} stocks")
+        
+        st.markdown("---")
+        
+        # Check if we have sector data
+        if not st.session_state['oi_data_list']:
+            st.info("👆 Click **Fetch Data** to load sector-wise Open Interest analysis")
+        else:
+            oi_data_list = st.session_state['oi_data_list']
+            
+            # Market Sentiment Summary
+            st.subheader("📊 Market Sentiment Heatmap")
+            sentiment = get_market_sentiment_summary(oi_data_list)
+            
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            with col1:
+                st.metric("🟢 Long Buildup", sentiment["Long Buildup"])
+            with col2:
+                st.metric("🔴 Short Buildup", sentiment["Short Buildup"])
+            with col3:
+                st.metric("🔵 Short Covering", sentiment["Short Covering"])
+            with col4:
+                st.metric("🟠 Long Unwinding", sentiment["Long Unwinding"])
+            with col5:
+                st.metric("📈 Bullish %", f"{sentiment['bullish_pct']}%", delta="Bullish")
+            with col6:
+                st.metric("📉 Bearish %", f"{sentiment['bearish_pct']}%", delta="Bearish", delta_color="inverse")
+            
+            st.markdown("---")
+            
+            # Quadrant Matrix
+            st.subheader("🎯 Quadrant Matrix")
+            
+            # Prepare data for scatter plot
+            x_vals = [d.price_change_pct for d in oi_data_list]
+            y_vals = [d.current_month_oi_change_pct for d in oi_data_list]
+            symbols = [d.symbol for d in oi_data_list]
+            colors = [get_quadrant_color(d.quadrant) for d in oi_data_list]
+            quadrants = [d.quadrant for d in oi_data_list]
+            
+            # Create scatter plot
+            fig = go.Figure()
+            
+            # Add quadrant background colors (rectangles)
+            fig.add_shape(type="rect", x0=0, y0=0, x1=15, y1=30,
+                          fillcolor="rgba(0, 200, 83, 0.1)", line=dict(width=0),
+                          layer="below")  # Long Buildup
+            fig.add_shape(type="rect", x0=-15, y0=0, x1=0, y1=30,
+                          fillcolor="rgba(255, 23, 68, 0.1)", line=dict(width=0),
+                          layer="below")  # Short Buildup
+            fig.add_shape(type="rect", x0=0, y0=-30, x1=15, y1=0,
+                          fillcolor="rgba(33, 150, 243, 0.1)", line=dict(width=0),
+                          layer="below")  # Short Covering
+            fig.add_shape(type="rect", x0=-15, y0=-30, x1=0, y1=0,
+                          fillcolor="rgba(255, 152, 0, 0.1)", line=dict(width=0),
+                          layer="below")  # Long Unwinding
+            
+            # Add stocks as scatter points
+            for i, data in enumerate(oi_data_list):
+                fig.add_trace(go.Scatter(
+                    x=[data.price_change_pct],
+                    y=[data.current_month_oi_change_pct],
+                    mode='markers+text',
+                    marker=dict(size=12, color=get_quadrant_color(data.quadrant)),
+                    text=[data.symbol],
+                    textposition="top center",
+                    textfont=dict(size=9),
+                    name=data.symbol,
+                    hovertemplate=f"<b>{data.symbol}</b><br>" +
+                                  f"Price Δ: {data.price_change_pct:+.2f}%<br>" +
+                                  f"OI Δ: {data.current_month_oi_change_pct:+.2f}%<br>" +
+                                  f"Quadrant: {data.quadrant}<br>" +
+                                  f"PCR: {data.pcr_ratio}<extra></extra>",
+                    showlegend=False
+                ))
+            
+            # Add quadrant labels
+            fig.add_annotation(x=7, y=25, text="🟢 LONG BUILDUP", showarrow=False,
+                              font=dict(size=12, color="green"))
+            fig.add_annotation(x=-7, y=25, text="🔴 SHORT BUILDUP", showarrow=False,
+                              font=dict(size=12, color="red"))
+            fig.add_annotation(x=7, y=-25, text="🔵 SHORT COVERING", showarrow=False,
+                              font=dict(size=12, color="blue"))
+            fig.add_annotation(x=-7, y=-25, text="🟠 LONG UNWINDING", showarrow=False,
+                              font=dict(size=12, color="orange"))
+            
+            # Add axis lines
+            fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+            fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1)
+            
+            fig.update_layout(
+                title="Price Change % vs OI Change %",
+                xaxis_title="Price Change (%)",
+                yaxis_title="OI Change (%)",
+                height=500,
+                template="plotly_dark",
+                xaxis=dict(range=[-15, 15], zeroline=True),
+                yaxis=dict(range=[-30, 30], zeroline=True),
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("---")
+            
+            # Stocks Table
+            st.subheader("📋 All Stocks Data")
+            
+            # Create DataFrame for display
+            import pandas as pd
+            table_data = []
+            for d in oi_data_list:
+                table_data.append({
+                    "Symbol": d.symbol,
+                    "Spot (₹)": f"{d.spot_price:,.2f}",
+                    "Price Δ%": f"{d.price_change_pct:+.2f}%",
+                    "OI Δ% (Curr)": f"{d.current_month_oi_change_pct:+.2f}%",
+                    "OI Δ% (Next)": f"{d.next_month_oi_change_pct:+.2f}%",
+                    "Quadrant": f"{get_quadrant_emoji(d.quadrant)} {d.quadrant}",
+                    "PCR": d.pcr_ratio
+                })
+            
+            df = pd.DataFrame(table_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def render_target_projection():

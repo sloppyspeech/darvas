@@ -174,3 +174,113 @@ Be concise and actionable."""
             
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def generate_oi_insight(oi_data: dict) -> Optional[str]:
+    """
+    Generate AI insight for Open Interest analysis.
+    
+    Args:
+        oi_data: Dictionary containing OI analysis data
+    
+    Returns:
+        LLM-generated insight with conviction score
+    """
+    import json as json_module
+    
+    try:
+        # System instruction for derivative analysis
+        system_prompt = """You are an expert derivative analyst. I will provide you with Price, Open Interest (OI), and PCR data for a stock. Your task is to interpret the quadrant (e.g., Long Buildup) and tell the user if the big money is entering or exiting. Be professional, cautious, and highlight if the next month's expiry shows higher conviction than the current one."""
+        
+        # Create the analysis prompt
+        prompt = f"""{system_prompt}
+
+Analyze the following derivative data:
+
+Stock: {oi_data.get('ticker', 'Unknown')}
+Spot Price: ₹{oi_data.get('spot_price', 'N/A')}
+Price Change: {oi_data.get('price_change_pct', 'N/A')}
+Current Month OI Change: {oi_data.get('current_month_OI_change', 'N/A')}
+Next Month OI Change: {oi_data.get('next_month_OI_change', 'N/A')}
+Quadrant Classification: {oi_data.get('quadrant', 'Unknown')}
+Put-Call Ratio (PCR): {oi_data.get('pcr_ratio', 'N/A')}
+
+Provide:
+1. A summary explaining the strength of the trend
+2. A Conviction Score from 1-10 (1=weak, 10=very strong)
+3. Key observation about institutional activity
+
+Format your response as:
+**Summary:** [Your analysis & prediction summary]
+**Conviction Score:** [X/10]
+**Key Insight:** [One line observation]"""
+
+        # Build request payload
+        request_payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.3,
+                "num_predict": 500
+            }
+        }
+        
+        # Print exact request being sent
+        print("\n" + "="*80)
+        print("OLLAMA REQUEST - FULL JSON PAYLOAD:")
+        print("="*80)
+        print(json_module.dumps(request_payload, indent=2))
+        print("="*80)
+        print(f"URL: {OLLAMA_BASE_URL}/api/generate")
+        print("="*80 + "\n")
+        
+        # Call Ollama API
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json=request_payload,
+            timeout=120  # Increased timeout for thinking models
+        )
+        
+        # Print full response
+        print("\n" + "="*80)
+        print("OLLAMA RESPONSE - FULL JSON:")
+        print("="*80)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Text (raw):")
+        print(response.text)
+        print("="*80 + "\n")
+        
+        if response.status_code == 200:
+            result = response.json()
+            
+            # Print parsed fields
+            print("PARSED RESPONSE FIELDS:")
+            for key, value in result.items():
+                val_str = str(value)[:300] if value else 'EMPTY/NULL'
+                print(f"  {key}: {val_str}")
+            print("="*80 + "\n")
+            
+            # Check both 'response' and 'thinking' fields - some models use thinking
+            insight = result.get('response', '')
+            thinking = result.get('thinking', '')
+            
+            # Use response if available, otherwise use thinking
+            final_output = insight if insight else thinking
+            
+            if final_output:
+                return final_output.strip()
+            else:
+                return "Error: LLM returned empty response. The model may not be loaded or took too long."
+        else:
+            return f"Error: Ollama returned status {response.status_code}: {response.text[:200]}"
+            
+    except requests.exceptions.ConnectionError as e:
+        print(f"[ERROR] ConnectionError: {e}")
+        return "Error: Cannot connect to Ollama. Make sure it's running on port 11435."
+    except requests.exceptions.Timeout as e:
+        print(f"[ERROR] Timeout: {e}")
+        return "Error: Ollama request timed out. The model may be loading."
+    except Exception as e:
+        print(f"[ERROR] Exception: {e}")
+        return f"Error: {str(e)}"
